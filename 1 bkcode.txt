@@ -1,0 +1,12 @@
+1 bkcode
+print("[5/5] Rendering final video")
+        muxed: list[str] = []
+        for i, (clip, audio) in enumerate(zip(clip_paths, audio_paths), start=1):
+            out = os.path.join(mux_dir, f"scene_{i:03d}.mp4")
+            ff.mux_scene(clip, audio, out, executable=ffmpeg_exe,
+                         crf=int(ff_cfg.get("crf", 19)),
+                         preset=str(ff_cfg.get("preset", "veryfast")))
+            muxed.append(out)
+        ff.concat_scenes(muxed, final_path, executable=ffmpeg_exe)
+        print(f"Done -> {final_path}")
+        return 0

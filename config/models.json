@@ -1,0 +1,59 @@
+{
+  "_comment": "Model registry. Adding a model = workflow file + provider class + one entry here. main.py never changes.",
+  "image": {
+    "sd15": {
+      "provider": "sd15",
+      "workflow": "workflows/image/sd15.json",
+      "negative_prompt": "blurry, low quality, distorted, watermark",
+      "steps": 20,
+      "cfg": 7.0,
+      "sampler": "euler",
+      "scheduler": "normal",
+      "dim_multiple": 8
+    },
+    "sdxl": {
+      "provider": "sdxl",
+      "workflow": "workflows/image/sdxl.json",
+      "negative_prompt": "blurry, low quality, distorted, watermark",
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler": "euler",
+      "scheduler": "normal",
+      "dim_multiple": 8
+    },
+    "flux": {
+      "provider": "flux",
+      "workflow": "workflows/image/flux.json",
+      "negative_prompt": "",
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler": "euler",
+      "scheduler": "simple",
+      "dim_multiple": 16
+    },
+    "krea": {
+      "provider": "krea",
+      "workflow": "workflows/image/krea2_turbo_t2i.json",
+      "workflow_ref": "workflows/image/krea2_character_ref.json",
+      "denoise": 0.65,
+      "negative_prompt": ""
+    }
+  },
+  "video": {
+    "ltx": {
+      "provider": "ltx",
+      "workflow": "workflows/video/ltx2_5_i2v.json",
+      "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly"
+    },
+    "wan": {
+      "provider": "wan",
+      "workflow": "workflows/video/wan_i2v.json",
+      "negative_prompt": "blurry, low quality, distorted, watermark, static"
+    }
+  },
+  "audio": {
+    "edge_tts": {
+      "provider": "edge_tts"
+    }
+  }
+}
