@@ -80,6 +80,10 @@ def mux_scene(video_path: str, audio_path: str, out_path: str,
         executable, "-y",
         "-stream_loop", str(loops), "-i", video_path,
         "-i", audio_path,
+        # Explicit mapping: without -map, ffmpeg's automatic stream
+        # selection prefers the clip's embedded stereo track over the mono
+        # narration (most channels wins) and silently drops the narration.
+        "-map", "0:v:0", "-map", "1:a:0",
     ]
     if audio_dur > 0:
         cmd += ["-t", f"{audio_dur:.3f}"]

@@ -42,11 +42,29 @@ def fixture_scenes(durations=DURATIONS):
 
 
 def write_clip(path, seconds):
+    # NOTE: clips carry a competing stereo audio track, exactly like real
+    # LTX outputs. Without explicit -map, ffmpeg auto-selection prefers this
+    # stereo track over the mono narration and silently drops the narration.
     subprocess.run(
-        ["ffmpeg", "-y", "-f", "lavfi",
+        ["ffmpeg", "-y",
+         "-f", "lavfi",
          "-i", f"testsrc=duration={seconds}:size=256x256:rate=10",
-         "-pix_fmt", "yuv420p", "-c:v", "libx264", "-f", "mp4", path],
+         "-f", "lavfi",
+         "-i", f"sine=frequency=880:duration={seconds}",
+         "-map", "0:v:0", "-map", "1:a:0",
+         "-pix_fmt", "yuv420p", "-c:v", "libx264",
+         "-c:a", "aac", "-ac", "2", "-ar", "48000",
+         "-f", "mp4", path],
         check=True, capture_output=True)
+
+
+def audio_channels(path):
+    """Channel count of the first audio stream (proves which track won)."""
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=channels", "-of", "csv=p=0", path],
+        capture_output=True, text=True)
+    return int(r.stdout.strip())
 
 
 def write_audio(path, seconds):
@@ -76,16 +94,6 @@ def make_project(tmpdir, durations=DURATIONS):
         "mux_dir": os.path.join(tmpdir, "muxed"),
         "final": os.path.join(tmpdir, "final.mp4"),
         "state": os.path.join(tmpdir, "state.json"),
-    }
-
-
-def make_ctx(tmpdir, paths):
-    state = st.new_state("test")
-    state["scene_ids"] = [1, 2, 3]
-    return {
-        "project": "test", "mux_dir": paths["mux_dir"],
-        "final_path": paths["final"], "state_path": paths["state"],
-        "state": state, "ffmpeg_exe": "ffmpeg",
     }
 
 
@@ -168,6 +176,24 @@ class PlannerFinalizeTest(unittest.TestCase):
 
 
 class FinalizeStageTest(unittest.TestCase):
+    def test_mux_selects_narration_over_clip_audio(self):
+        # Core regression: the clip's embedded stereo track must NOT win
+        # over the mono narration (ffmpeg auto-selection picks most
+        # channels). mux_scene maps 0:v:0 + 1:a:0 explicitly.
+        require_ffmpeg(self)
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = os.path.join(tmp, "clip.mp4")
+            audio = os.path.join(tmp, "narr.mp3")
+            write_clip(clip, 3)
+            write_audio(audio, 3)
+            self.assertEqual(audio_channels(clip), 2)  # competing track present
+            self.assertEqual(audio_channels(audio), 1)  # narration is mono
+            out = os.path.join(tmp, "muxed.mp4")
+            ff.mux_scene(clip, audio, out, copy_video=True)
+            self.assertEqual(ff.probe_streams(out), ["video", "audio"])
+            self.assertEqual(audio_channels(out), 1)  # narration won
+            self.assertAlmostEqual(ff.probe_duration(out), 3.0, delta=0.5)
+
     def test_order_and_pairing(self):
         require_ffmpeg(self)
         with tempfile.TemporaryDirectory() as tmp:
@@ -203,6 +229,11 @@ class FinalizeStageTest(unittest.TestCase):
             self.assertTrue(st.valid_final_output(paths["final"]))
             final_dur = ff.probe_duration(paths["final"])
             self.assertAlmostEqual(final_dur, 5 + 6 + 7, delta=1.0)
+            # Every muxed scene carries the narration (mono), not the
+            # clip's embedded stereo track.
+            for sid in (1, 2, 3):
+                muxed = os.path.join(paths["mux_dir"], f"scene_{sid:03d}.mp4")
+                self.assertEqual(audio_channels(muxed), 1)
             # No .tmp.mp4 leftovers.
             leftovers = [f for f in os.listdir(paths["mux_dir"]) if ".tmp." in f]
             self.assertEqual(leftovers, [])
@@ -337,6 +368,7 @@ class ResumeFinalizeCommandTest(unittest.TestCase):
         self.assertIn("audio", streams)
         final_dur = ff.probe_duration(final)
         self.assertAlmostEqual(final_dur, sum(DURATIONS), delta=1.0)
+        self.assertEqual(audio_channels(final), 1)  # narration, not clip audio
         with open(os.path.join(AI_VIDEO_DIR, "projects", self.PROJECT,
                                "state.json"), encoding="utf-8") as f:
             state = json.load(f)
