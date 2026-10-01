@@ -38,6 +38,24 @@ def probe_duration(path: str, ffprobe_exe: str = "ffprobe") -> float:
         return 0.0
 
 
+def probe_streams(path: str, ffprobe_exe: str = "ffprobe") -> list[str]:
+    """Codec types present in the file (e.g. ["video", "audio"]).
+
+    Returns [] when the file is unreadable. Used to verify a muxed output
+    actually contains both a video and an audio stream.
+    """
+    exe = shutil.which(ffprobe_exe) or ffprobe_exe
+    try:
+        out = subprocess.run(
+            [exe, "-v", "error", "-show_entries", "stream=codec_type",
+             "-of", "json", path],
+            check=True, capture_output=True, text=True).stdout
+        return [str(s.get("codec_type", ""))
+                for s in json.loads(out).get("streams", [])]
+    except Exception:
+        return []
+
+
 def mux_scene(video_path: str, audio_path: str, out_path: str,
               executable: str = "ffmpeg", crf: int = 19, preset: str = "veryfast",
               copy_video: bool = False) -> str:

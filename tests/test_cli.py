@@ -99,6 +99,7 @@ class CliTest(unittest.TestCase):
             ["hello", "--stop-after", "images"],
             ["--project", "x", "--resume"],
             ["--project", "x", "--resume", "--stage", "video"],
+            ["--project", "x", "--resume", "--stage", "finalize"],
             ["--project", "x", "--resume", "--stage", "image", "--scene", "3"],
             ["--project", "x", "--resume", "--scene", "2"],
         ]

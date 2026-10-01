@@ -96,9 +96,19 @@ python ai_video/main.py --project mars_city1 --resume --stage video --video-mode
 python ai_video/main.py --project mars_city1 --resume
 ```
 
+Full staged workflow (`banhmi_world1` example):
+
+```powershell
+python ai_video/main.py "..." --project banhmi_world1 --research web --image-model krea --video-model ltx --stop-after image
+python ai_video/main.py --project banhmi_world1 --resume --stage video --video-model ltx
+python ai_video/main.py --project banhmi_world1 --resume --stage audio
+python ai_video/main.py --project banhmi_world1 --resume --stage finalize
+```
+
 - `--stop-after storyboard|image(s)|video|audio|all` gates the pipeline (new: `video`, `audio`).
 - `--resume` loads `storyboard.json`, re-validates existing outputs (exists/readable/size/format/duration) and skips valid scenes; never calls research/storyboard/Ollama.
-- `--stage image|video|audio` (requires `--resume`) runs one stage; `--scene N` limits to one scene and forces regeneration.
+- `--stage image|video|audio|finalize` (requires `--resume`) runs one stage; `--scene N` limits to one scene and forces regeneration (not applicable to `finalize`, which always covers all scenes in storyboard order).
+- `finalize` muxes each scene's clip + narration, concatenates in storyboard order, and writes `final.mp4` atomically (`.tmp` + validate + rename) without re-encoding when stream-copy is safe; the final file must contain both video and audio streams.
 - Progress persists in `state.json` (atomic writes); outputs render to `.tmp` then validate then rename, so good outputs are never destroyed. Ctrl+C prints completed scenes + the resume command.
 - Seeds: `--seed` wins, else the run's original `base_seed` from `state.json` is reused.
 

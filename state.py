@@ -177,6 +177,15 @@ def probe_video_duration(path: str) -> float | None:
     return duration if duration > 0 else None
 
 
+def valid_final_output(path: str) -> bool:
+    """Final-output gate: a probed video file containing BOTH a video
+    stream and an audio stream. A video-only file is not a valid final."""
+    if not valid_video_file(path):
+        return False
+    streams = ff.probe_streams(path)
+    return "video" in streams and "audio" in streams
+
+
 def valid_video_file(path: str, expected_duration: float | None = None) -> bool:
     """Exists, non-zero, ffprobe-readable; optionally duration-plausible.
 

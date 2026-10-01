@@ -199,6 +199,16 @@ def _cleanup_tmp(path: str) -> None:
         pass
 
 
+def _tmp_output(path: str) -> str:
+    """Temp path that keeps the real extension.
+
+    ffmpeg infers the output container from the filename, so
+    "scene_001.mp4.tmp" fails while "scene_001.tmp.mp4" works.
+    """
+    root, ext = os.path.splitext(path)
+    return f"{root}.tmp{ext}"
+
+
 def _interrupt_message(stage: str, scene_id: int, completed: list[int],
                        project: str) -> str:
     done = ", ".join(f"scene_{i:03d}" for i in completed) or "none yet"
@@ -257,11 +267,36 @@ def plan_resume_stages(*, scenes: list[dict], img_dir: str, vid_dir: str,
         return ["video"], []
     if stage == "audio":
         return ["audio"], []
+    if stage == "finalize":
+        if only_scene is not None:
+            return [], ["--scene does not apply to --stage finalize: "
+                        "final.mp4 always covers all scenes in storyboard order."]
+        all_ids = sorted(by_id)
+        bad_clips = [f"scene_{sid:03d}" for sid in all_ids
+                     if not st.valid_video_file(
+                         scene_path(vid_dir, sid, "mp4"),
+                         resolve_scene_duration(by_id[sid], default_duration))]
+        bad_audio = [f"scene_{sid:03d}" for sid in all_ids
+                     if not st.valid_audio_file(scene_path(aud_dir, sid, "mp3"))]
+        problems = []
+        if bad_clips:
+            problems.append(
+                f"Cannot run finalize stage: video clip(s) missing or "
+                f"invalid: {', '.join(bad_clips)}. "
+                f"Generate videos first (--stage video).")
+        if bad_audio:
+            problems.append(
+                f"Cannot run finalize stage: narration audio(s) missing or "
+                f"invalid: {', '.join(bad_audio)}. "
+                f"Generate audio first (--stage audio).")
+        if problems:
+            return [], problems
+        return ["finalize"], []
     # Continue mode: from the first incomplete stage through the end.
     if all(images_ok(sid) for sid in ids):
         if all(videos_ok(sid) for sid in ids):
             if all(audios_ok(sid) for sid in ids):
-                if st.valid_video_file(final_path):
+                if st.valid_final_output(final_path):
                     return [], []
                 return ["finalize"], []
             return ["audio", "finalize"], []
@@ -447,24 +482,26 @@ def run_finalize_stage(ctx: dict, scenes: list[dict], clip_paths: dict,
     try:
         for sid in ids:
             out = scene_path(ctx["mux_dir"], sid, "mp4")
-            tmp = out + ".tmp"
+            tmp = _tmp_output(out)
             ff.mux_scene(clip_paths[sid], audio_paths[sid], tmp,
                          executable=ctx["ffmpeg_exe"], copy_video=True)
-            if not st.valid_video_file(tmp):
+            if not st.valid_final_output(tmp):
                 _cleanup_tmp(tmp)
-                raise ProviderError(f"Finalize: muxed scene {sid} invalid")
+                raise ProviderError(f"Finalize: muxed scene {sid} invalid "
+                                    f"(missing video/audio stream)")
             os.replace(tmp, out)
             muxed.append(out)
-        final_tmp = ctx["final_path"] + ".tmp"
+        final_tmp = _tmp_output(ctx["final_path"])
         ff.concat_scenes(muxed, final_tmp, executable=ctx["ffmpeg_exe"], copy=True)
-        if not st.valid_video_file(final_tmp):
+        if not st.valid_final_output(final_tmp):
             _cleanup_tmp(final_tmp)
-            raise ProviderError("Finalize: final.mp4 failed validation")
+            raise ProviderError("Finalize: final.mp4 failed validation "
+                                "(missing video/audio stream)")
         os.replace(final_tmp, ctx["final_path"])
     except KeyboardInterrupt:
-        for tmp in [scene_path(ctx["mux_dir"], i, "mp4") + ".tmp" for i in ids]:
-            _cleanup_tmp(tmp)
-        _cleanup_tmp(ctx["final_path"] + ".tmp")
+        for i in ids:
+            _cleanup_tmp(_tmp_output(scene_path(ctx["mux_dir"], i, "mp4")))
+        _cleanup_tmp(_tmp_output(ctx["final_path"]))
         done = [i for i in ids if st.valid_video_file(
             scene_path(ctx["mux_dir"], i, "mp4"))]
         raise StageInterrupted(
@@ -580,7 +617,12 @@ def run_resume_flow(args, ctx, scenes, stages_planned):
         full_audios = {sid: scene_path(ctx["aud_dir"], sid, "mp3") for sid in ids}
         run_finalize_stage(ctx, scenes, full_clips, full_audios)
     if args.stage is not None:
-        scope = f"scene {only}" if only is not None else "missing scenes"
+        if args.stage == "finalize":
+            scope = "all scenes"
+        elif only is not None:
+            scope = f"scene {only}"
+        else:
+            scope = "missing scenes"
         print(f"Stage '{args.stage}' complete ({scope}).")
     return 0
 
@@ -628,7 +670,8 @@ def parse_args(argv=None):
                    choices=["storyboard", "image", "images", "video", "videos",
                             "audio", "all"],
                    help="Stop the pipeline after the given stage (default: all)")
-    p.add_argument("--stage", default=None, choices=["image", "video", "audio"],
+    p.add_argument("--stage", default=None, choices=["image", "video", "audio",
+                                                   "finalize"],
                    help="Run only one stage from an existing project (requires --resume)")
     p.add_argument("--scene", default=None, type=int,
                    help="Limit the requested stage(s) to one 1-based scene number "
