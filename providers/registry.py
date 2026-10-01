@@ -25,6 +25,8 @@ VIDEO_PROVIDERS = {
 }
 AUDIO_PROVIDERS = {
     "edge_tts": ("providers.audio.edge_tts", "EdgeTtsProvider"),
+    "edge": ("providers.audio.edge_tts", "EdgeTtsProvider"),
+    "piper": ("providers.audio.piper_tts", "PiperAudioProvider"),
 }
 RESEARCH_PROVIDERS = {
     "web": ("providers.research.web", "WebResearchProvider"),
@@ -64,6 +66,15 @@ def lookup(base_dir: str, kind: str, model: str) -> dict:
     wfr = entry.get("workflow_ref")
     if wfr:
         entry["workflow_ref_path"] = os.path.join(base_dir, wfr)
+    vd = entry.get("voice_dir")
+    if vd:
+        entry["voice_dir_path"] = vd if os.path.isabs(vd) else os.path.join(base_dir, vd)
+    exe = entry.get("executable")
+    if exe and not os.path.isabs(exe) and (os.sep in exe or "/" in exe):
+        # Relative tool path: resolve against the application root,
+        # consistent with voice_dir/workflow handling. Bare command
+        # names (e.g. "piper") are left for PATH lookup at runtime.
+        entry["executable_path"] = os.path.normpath(os.path.join(base_dir, exe))
     return entry
 
 

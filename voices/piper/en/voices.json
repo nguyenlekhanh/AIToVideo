@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Army",
+    "gender": "female",
+    "audio_path": "piper-en/en_US-amy-medium",
+    "description": "US Female"
+  },
+  {
+    "name": "Arctic",
+    "gender": "male",
+    "audio_path": "piper-en/en_US-arctic-medium.onnx",
+    "description": "US Male"
+  },
+]

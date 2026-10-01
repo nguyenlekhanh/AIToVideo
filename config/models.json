@@ -54,6 +54,14 @@
   "audio": {
     "edge_tts": {
       "provider": "edge_tts"
+    },
+    "edge": {
+      "provider": "edge_tts"
+    },
+    "piper": {
+      "provider": "piper",
+      "voice_dir": "voices/piper/vn",
+      "executable": "tools/piper/piper.exe"
     }
   },
   "research": {

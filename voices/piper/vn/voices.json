@@ -1,0 +1,86 @@
+[
+  {
+    "name": "Ban Mai",
+    "gender": "female",
+    "audio_path": "piper/banmai.onnx",
+    "description": "Giọng nữ trẻ trung, thanh thoát"
+  },
+  {
+    "name": "Cúc",
+    "gender": "female",
+    "audio_path": "piper/cuc.onnx",
+    "description": "Giọng nữ nhẹ nhàng, dễ thương"
+  },
+  {
+    "name": "Tài An",
+    "gender": "male",
+    "audio_path": "piper/taian2.onnx",
+    "description": "Giọng nam trầm ấm, truyền cảm hứng"
+  },
+  {
+    "name": "Phương Trang",
+    "gender": "female",
+    "audio_path": "piper/phuongtrang.onnx",
+    "description": "Giọng nữ chuẩn, rõ ràng"
+  },
+  {
+    "name": "Ngọc Huyền (New)",
+    "gender": "female",
+    "audio_path": "piper/ngochuyennew.onnx",
+    "description": "Giọng nữ trong sáng, tự nhiên"
+  },
+  {
+    "name": "Ngọc Huyền",
+    "gender": "female",
+    "audio_path": "piper/ngochuyen.onnx",
+    "description": "Giọng nữ nhẹ nhàng, ấm áp"
+  },
+  {
+    "name": "Minh Quang",
+    "gender": "male",
+    "audio_path": "piper/minhquang.onnx",
+    "description": "Giọng nam trầm, mạnh mẽ"
+  },
+  {
+    "name": "Minh Khang",
+    "gender": "male",
+    "audio_path": "piper/minhkhang.onnx",
+    "description": "Giọng nam trẻ, năng động"
+  },
+  {
+    "name": "Mạng Dũng",
+    "gender": "male",
+    "audio_path": "piper/manhdung.onnx",
+    "description": "Giọng nam trầm ấm, rõ ràng"
+  },
+  {
+    "name": "Mai Phương",
+    "gender": "female",
+    "audio_path": "piper/maiphuong.onnx",
+    "description": "Giọng nữ thanh thoát, nhẹ nhàng"
+  },
+  {
+    "name": "Lạc Phi",
+    "gender": "male",
+    "audio_path": "piper/lacphi.onnx",
+    "description": "Giọng nam"
+  },
+  {
+    "name": "Duy",
+    "gender": "male",
+    "audio_path": "piper/duyoryx3175.onnx",
+    "description": "Giọng nam"
+  },
+  {
+    "name": "Chiêu Thanh",
+    "gender": "male",
+    "audio_path": "piper/chieuthanh.onnx",
+    "description": "Giọng nam mạnh mẽ, trầm"
+  },
+  {
+    "name": "Vàng",
+    "gender": "male",
+    "audio_path": "piper/vi_VN-vais1000-medium.onnx",
+    "description": "Giọng nữ nhẹ nhàng, ấm áp"
+  }
+]

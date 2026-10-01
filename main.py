@@ -660,7 +660,7 @@ def parse_args(argv=None):
     p.add_argument("--project", default=None, help="Project name (default: derived from prompt)")
     p.add_argument("--image-model", default="sd15", help="Image model from config/models.json")
     p.add_argument("--video-model", default="ltx", help="Video model from config/models.json")
-    p.add_argument("--audio-model", default="edge_tts", help="Audio model from config/models.json")
+    p.add_argument("--audio-model", default="edge_tts", help="Audio provider/model, e.g. edge or piper (see config/models.json)")
     p.add_argument("--aspect", default="16:9", help="Target aspect, e.g. 16:9 or 9:16")
     p.add_argument("--resolution", default=720, help="Target resolution, e.g. 420 or 720")
     p.add_argument("--character-reference", default=None,
@@ -684,7 +684,7 @@ def parse_args(argv=None):
                         "(research the topic before storyboarding)")
     # Infra overrides (backward compatible with the pre-provider CLI).
     p.add_argument("--model", default=None, help="Ollama model (default from config.yaml)")
-    p.add_argument("--voice", default=None, help="Edge TTS voice (default from config.yaml)")
+    p.add_argument("--voice", default=None, help="Voice for the audio provider: Edge voice name, or Piper voice file stem (default from config.yaml)")
     p.add_argument("--config", default=os.path.join(APP_DIR, "config.yaml"))
     p.add_argument("--scenes", type=int, default=None, help="Number of scenes")
     p.add_argument("--comfy-url", default=None, help="ComfyUI URL override")
