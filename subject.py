@@ -4,9 +4,15 @@ Model-agnostic and subject-agnostic (person, astronaut, animal, robot,
 object...). Populated from the storyboard JSON; rendered into each scene's
 image prompt by compose_scene_prompt(). Providers only ever see the final
 prompt string plus the optional reference image.
+
+CRITICAL: the rendered prompt is natural-language visual description ONLY.
+Schema labels, keys, brackets, IDs and instructions must never reach an
+image model (they get rendered as visible text). assert_no_schema_leak()
+enforces this on every composed prompt.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -47,40 +53,75 @@ class SubjectProfile:
         }
 
     def render(self) -> str:
-        """Render the identity block. Only non-empty parts are included."""
-        parts = ["[RECURRING SUBJECT]"]
-        if self.subject_type:
-            parts.append(f"Type: {self.subject_type}.")
-        if self.identity:
-            parts.append(f"Identity: {self.identity}")
-        if self.features:
-            parts.append(f"Distinctive features: {self.features}")
-        if self.clothing_or_equipment:
-            parts.append(f"Clothing/equipment: {self.clothing_or_equipment}")
-        if self.consistency:
-            parts.append(f"Consistency: {self.consistency}")
-        return "\n".join(parts)
+        """Render a natural-language visual description of the subject.
+
+        Comma-joined visual phrases, no labels/keys/brackets/instructions.
+        Only identity/features/clothing contribute (type is redundant when
+        identity exists; consistency notes are non-visual meta-instructions
+        and are intentionally excluded).
+        """
+        base = self.identity.strip()
+        if not base and self.subject_type.strip():
+            base = f"a {self.subject_type.strip()}"
+        if not base:
+            return ""
+        extras = []
+        if self.features.strip():
+            extras.append(self.features.strip().rstrip("."))
+        if self.clothing_or_equipment.strip():
+            extras.append(
+                f"wearing {self.clothing_or_equipment.strip()}".rstrip("."))
+        description = base if not extras else f"{base}, {', '.join(extras)}"
+        description = description[0].upper() + description[1:] + "."
+        return description
 
 
-REFERENCE_NOTE = (
-    "[REFERENCE IMAGE] Match the identity and appearance of the provided "
-    "reference image: preserve the same subject, features, clothing and "
-    "colors. Change only the environment, action and composition described "
-    "below; do not restyle or reinterpret the subject."
+# Internal-schema leakage signatures. Snake_case keys and JSON-ish field
+# names can never occur in natural prose, so they match anywhere; plain
+# prose words (subject/scene/...) only match as line-leading labels.
+SCHEMA_LEAK_PATTERNS = (
+    r"^\s*[\[\(]?(?:recurring subject|subject|scene|reference image)[\]\)]?\s*:",
+    r"(?<!\w)(?:image_prompt|video_prompt|narration|duration|"
+    r"research_fact_ids|source_ids|grounding|clothing_or_equipment|"
+    r"consistency|identity|features|type)[\"']?\s*:",
 )
+_SCHEMA_LEAK = re.compile("|".join(SCHEMA_LEAK_PATTERNS),
+                          re.IGNORECASE | re.MULTILINE)
+
+
+def assert_no_schema_leak(prompt: str) -> str:
+    """Fail loudly if an image prompt contains storyboard schema content.
+
+    Targets serialized/schema formatting, not normal English: "scene" or
+    "features" inside ordinary sentences pass; "Scene:" labels and
+    "clothing_or_equipment:" keys do not.
+    """
+    matches = sorted(set(_SCHEMA_LEAK.findall(prompt or "")))
+    if matches:
+        raise ValueError(
+            "Image prompt contains internal storyboard schema content "
+            f"({', '.join(matches)}); refusing to send it to the image "
+            "provider. Prompt must be natural-language visual description.")
+    return prompt
 
 
 def compose_scene_prompt(subject: SubjectProfile | None, scene_description: str,
                          with_reference: bool = False) -> str:
-    """Build the final image prompt: subject identity + scene + reference note.
+    """Build the final image prompt: natural visual description only.
+
+    Subject identity is woven in as flowing visual phrases
+    ("A young woman with long black hair, wearing a white ao dai."),
+    followed by the scene description. No labels, keys, brackets, IDs or
+    instructions are ever emitted. with_reference is accepted for API
+    compatibility; reference identity travels via the reference IMAGE
+    (img2img latent), never via words. Guarded by assert_no_schema_leak().
 
     With no subject (old storyboards), the scene description is returned
     unchanged to preserve existing behavior.
     """
     scene = (scene_description or "").strip()
     if subject is None or subject.is_empty():
-        return scene
-    blocks = [subject.render(), f"[SCENE]\n{scene}"]
-    if with_reference:
-        blocks.append(REFERENCE_NOTE)
-    return "\n\n".join(blocks)
+        return assert_no_schema_leak(scene)
+    description = subject.render()
+    composed = f"{description} {scene}" if description else scene
+    return assert_no_schema_leak(composed)

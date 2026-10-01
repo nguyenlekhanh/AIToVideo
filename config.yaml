@@ -20,7 +20,7 @@ comfyui:
   queue_timeout: 5400  # max seconds to wait for one ComfyUI job (LTX-2.5 is slow)
 
 pipeline:
-  duration: 5           # seconds per video scene (frame count = duration*fps+1)
+  duration: 5           # fallback seconds per scene (storyboard scene.duration wins)
 
 tts:
   voice: "en-US-AriaNeural"

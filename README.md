@@ -83,6 +83,38 @@ ai_video/
 
 Adding a model = workflow file + provider class + registry entry.
 
+## Resumable stage workflow
+
+```powershell
+# 1. storyboard + images, then stop and inspect
+python ai_video/main.py "..." --project mars_city1 --image-model krea --stop-after image
+# 2. regenerate only a bad scene (existing storyboard is never touched)
+python ai_video/main.py --project mars_city1 --resume --stage image --scene 3 --image-model krea
+# 3. continue approved images -> videos (stops after video)
+python ai_video/main.py --project mars_city1 --resume --stage video --video-model ltx
+# or: resume everything remaining (images -> videos -> audio -> final.mp4)
+python ai_video/main.py --project mars_city1 --resume
+```
+
+- `--stop-after storyboard|image(s)|video|audio|all` gates the pipeline (new: `video`, `audio`).
+- `--resume` loads `storyboard.json`, re-validates existing outputs (exists/readable/size/format/duration) and skips valid scenes; never calls research/storyboard/Ollama.
+- `--stage image|video|audio` (requires `--resume`) runs one stage; `--scene N` limits to one scene and forces regeneration.
+- Progress persists in `state.json` (atomic writes); outputs render to `.tmp` then validate then rename, so good outputs are never destroyed. Ctrl+C prints completed scenes + the resume command.
+- Seeds: `--seed` wins, else the run's original `base_seed` from `state.json` is reused.
+
+## Research mode (optional)
+
+```powershell
+python ai_video/main.py "Humanoid robots & AI breakthroughs" --research web --stop-after storyboard
+python ai_video/main.py "..."   # --research none (default): identical to the old offline pipeline
+```
+
+- `--research none` (default): no provider instantiated, no network, no credentials. Behavior unchanged.
+- `--research web`: `providers/research/web.py` (`WebResearchProvider`) collects keyless sources (Wikipedia API + best-effort DuckDuckGo instant-answer, stdlib only) and appends them as a **separate labeled message** to Ollama (the original prompt is never modified). Source metadata (`title`/`url`/`published`) is saved under `"research"` in `storyboard.json`; old files without it still load.
+- Architecture: `providers/research/base.py` (`ResearchProvider`, `ResearchSource`, `ResearchResult`, `ResearchError`). Failures raise loudly — never fabricated facts. Registry kind `research` + `config/models.json` entry; `main.py` only calls `maybe_research()` and forwards the context string.
+- Why external, not Ollama-native: probed local Ollama 0.34.3 — `/api/web_search` and `/api/web_fetch` return **404**, and the DuckDuckGo HTML endpoint is bot-filtered, so HTML scraping is not viable. No API key exists anywhere in this setup; **none is required** (and none is stored). If a keyed search API is ever needed, add a provider that reads e.g. `BRAVE_API_KEY` from the environment.
+- Limitation: keyless sources are encyclopedic, not live news — freshness-sensitive topics get background facts, not this week's headlines.
+
 Resolution: `--aspect`/`--resolution` resolve to target dims app-wide
 (720 = frame height landscape / frame width portrait, snapped to 32);
 each provider adjusts to its model constraints and reports final dims.

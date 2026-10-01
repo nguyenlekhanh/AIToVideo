@@ -55,5 +55,16 @@
     "edge_tts": {
       "provider": "edge_tts"
     }
+  },
+  "research": {
+    "web": {
+      "provider": "web",
+      "max_sources": 5,
+      "timeout": 20,
+      "snippet_chars": 1200,
+      "max_facts": 8,
+      "relevance_threshold": 0.15,
+      "max_expansions": 2
+    }
   }
 }

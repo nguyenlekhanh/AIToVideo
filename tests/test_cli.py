@@ -68,8 +68,60 @@ class CliTest(unittest.TestCase):
         self.assertEqual(args.stop_after, "all")
         args = main.parse_args(["hello", "--stop-after", "images"])
         self.assertEqual(args.stop_after, "images")
+        for value in ("storyboard", "image", "images", "video", "videos",
+                      "audio", "all"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    main.parse_args(["hello", "--stop-after", value]).stop_after,
+                    value)
         with self.assertRaises(SystemExit):
-            main.parse_args(["hello", "--stop-after", "videos"])
+            main.parse_args(["hello", "--stop-after", "bogus"])
+
+    def test_resume_stage_scene_flags(self):
+        args = main.parse_args(["--project", "mars_city1", "--resume"])
+        self.assertTrue(args.resume)
+        self.assertIsNone(args.prompt)
+        self.assertIsNone(args.stage)
+        self.assertIsNone(args.scene)
+        args = main.parse_args(["--project", "mars_city1", "--resume",
+                                "--stage", "video", "--scene", "3"])
+        self.assertEqual(args.stage, "video")
+        self.assertEqual(args.scene, 3)
+        with self.assertRaises(SystemExit):
+            main.parse_args(["hello", "--stage", "bogus"])
+        # prompt optional only with --resume
+        self.assertIsNone(main.parse_args(
+            ["--project", "x", "--resume"]).prompt)
+
+    def test_cli_combination_validation(self):
+        ok = [
+            ["hello"],
+            ["hello", "--stop-after", "images"],
+            ["--project", "x", "--resume"],
+            ["--project", "x", "--resume", "--stage", "video"],
+            ["--project", "x", "--resume", "--stage", "image", "--scene", "3"],
+            ["--project", "x", "--resume", "--scene", "2"],
+        ]
+        for argv in ok:
+            with self.subTest(argv=argv):
+                self.assertIsNone(
+                    main.validate_cli_combination(main.parse_args(argv)))
+        bad = [
+            ([], "prompt required"),
+            (["--resume"], "project required"),
+            (["hello", "--stage", "video"], "stage needs resume"),
+            (["hello", "--scene", "3"], "scene needs resume"),
+            (["--project", "x", "--resume", "--scene", "0"], "positive scene"),
+            (["--project", "x", "--resume", "--stage", "video",
+              "--stop-after", "video"], "mutually exclusive"),
+        ]
+        for argv, _label in bad:
+            with self.subTest(argv=argv):
+                self.assertIsNotNone(
+                    main.validate_cli_combination(main.parse_args(argv)))
+        # prompt missing without resume covered via parse (prompt optional)
+        self.assertIsNotNone(main.validate_cli_combination(
+            main.parse_args([])))
 
     def test_registered_models_exist_on_disk(self):
         for kind, model in (("image", "sd15"), ("image", "sdxl"), ("image", "flux"),

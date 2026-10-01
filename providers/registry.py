@@ -26,8 +26,12 @@ VIDEO_PROVIDERS = {
 AUDIO_PROVIDERS = {
     "edge_tts": ("providers.audio.edge_tts", "EdgeTtsProvider"),
 }
+RESEARCH_PROVIDERS = {
+    "web": ("providers.research.web", "WebResearchProvider"),
+}
 
-KIND_TABLES = {"image": IMAGE_PROVIDERS, "video": VIDEO_PROVIDERS, "audio": AUDIO_PROVIDERS}
+KIND_TABLES = {"image": IMAGE_PROVIDERS, "video": VIDEO_PROVIDERS,
+               "audio": AUDIO_PROVIDERS, "research": RESEARCH_PROVIDERS}
 
 
 def registry_path(base_dir: str) -> str:
@@ -38,7 +42,7 @@ def load_registry(base_dir: str) -> dict:
     path = registry_path(base_dir)
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    for kind in ("image", "video", "audio"):
+    for kind in ("image", "video", "audio", "research"):
         if not isinstance(data.get(kind), dict):
             raise ValueError(f"Registry {path} missing section: {kind!r}")
     return data

@@ -49,6 +49,9 @@ class SubjectProfileTest(unittest.TestCase):
         self.assertIn("boxy service robot", text)
         self.assertNotIn("Distinctive features", text)
         self.assertNotIn("Clothing", text)
+        self.assertNotIn("Type:", text)
+        self.assertNotIn("Identity:", text)
+        self.assertNotIn("[", text)
 
     def test_compose_no_subject_unchanged(self):
         scene = "A robot walks through a market."
@@ -56,13 +59,16 @@ class SubjectProfileTest(unittest.TestCase):
         self.assertEqual(
             compose_scene_prompt(SubjectProfile.from_dict({}), scene), scene)
 
-    def test_compose_includes_identity_scene_and_note(self):
+    def test_compose_includes_identity_and_scene(self):
         profile = SubjectProfile.from_dict(dict(ASTRONAUT))
         text = compose_scene_prompt(profile, "The astronaut climbs a dune.",
                                     with_reference=True)
         self.assertIn("gold visor", text)
         self.assertIn("The astronaut climbs a dune.", text)
-        self.assertIn("reference image", text.lower())
+        # identity woven in as prose; no schema labels or reference note
+        self.assertNotIn("reference image", text.lower())
+        self.assertNotIn("[RECURRING SUBJECT]", text)
+        self.assertNotIn("Type:", text)
 
     def test_compose_no_reference_note(self):
         profile = SubjectProfile.from_dict(dict(ASTRONAUT))
