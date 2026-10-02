@@ -100,8 +100,14 @@ def validate_cli_combination(args) -> str | None:
     Returns an error message, or None when the combination is valid.
     Pure function (no I/O) so unit tests can cover every combination.
     """
-    if args.prompt is None and not args.resume:
-        return "the prompt is required unless --resume is used"
+    if args.prompt is None and not args.resume and not getattr(args, "keyframes", None):
+        return "the prompt is required unless --resume or --keyframes is used"
+    if getattr(args, "prompt", None) and getattr(args, "keyframes", None):
+        return "cannot use --keyframes with a prompt"
+    if getattr(args, "keyframes", None) and args.resume:
+        return "cannot use --keyframes with --resume (resume loads the existing storyboard)"
+    if getattr(args, "keyframes", None) and not getattr(args, "project", None):
+        return "--keyframes requires --project"
     if args.resume and not args.project:
         return "--resume requires --project"
     if args.stage is not None and not args.resume:
@@ -534,15 +540,26 @@ def run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model, num_scenes,
     ctx["state"] = fresh
     state = fresh
     print("[1/5] Generating storyboard")
-    research_context, research_meta = maybe_research(args.research, args.prompt)
-    if research_meta is not None:
-        quality = research_meta.get("research_quality", "?")
-        print(f"  Research: web ({len(research_meta['sources'])} sources, "
-              f"quality={quality})")
-    raw = ol.generate_storyboard(args.prompt, model=ollama_model,
-                                 base_url=ollama_url, num_scenes=num_scenes,
-                                 timeout=int(ollama_cfg.get("timeout", 180)),
-                                 research_context=research_context)
+    if getattr(args, "keyframes", None):
+        # Mode B: keyframes -> Qwen-VL -> storyboard. No text prompt, no
+        # research topic; the images are the source. Same save/validate/
+        # resume path as the text flow below.
+        analysis_model = getattr(args, "analysis_model", None) or "qwen3-vl:8b"
+        raw = ol.generate_storyboard_from_keyframes(
+            args.keyframes, model=analysis_model, base_url=ollama_url,
+            num_scenes=args.scenes,
+            timeout=int(ollama_cfg.get("timeout", 600)))
+        research_meta = None
+    else:
+        research_context, research_meta = maybe_research(args.research, args.prompt)
+        if research_meta is not None:
+            quality = research_meta.get("research_quality", "?")
+            print(f"  Research: web ({len(research_meta['sources'])} sources, "
+                  f"quality={quality})")
+        raw = ol.generate_storyboard(args.prompt, model=ollama_model,
+                                     base_url=ollama_url, num_scenes=num_scenes,
+                                     timeout=int(ollama_cfg.get("timeout", 180)),
+                                     research_context=research_context)
     scenes = sb.validate_storyboard(raw, research_meta)
     rewrite_timeout = int(ollama_cfg.get("timeout", 180))
 
@@ -656,7 +673,7 @@ def maybe_research(research_mode: str, topic: str) -> tuple[str | None, dict | N
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Minimal AI video generator (provider architecture).")
     p.add_argument("prompt", nargs="?", default=None,
-                   help="Video idea (required unless --resume is used)")
+                   help="Video idea (required unless --resume or --keyframes is used)")
     p.add_argument("--project", default=None, help="Project name (default: derived from prompt)")
     p.add_argument("--image-model", default="sd15", help="Image model from config/models.json")
     p.add_argument("--video-model", default="ltx", help="Video model from config/models.json")
@@ -690,6 +707,13 @@ def parse_args(argv=None):
     p.add_argument("--comfy-url", default=None, help="ComfyUI URL override")
     p.add_argument("--ollama-url", default=None, help="Ollama URL override")
     p.add_argument("--seed", type=int, default=None, help="Base random seed")
+    p.add_argument("--keyframes", default=None,
+                   help="Directory containing source keyframe images for visual analysis")
+    p.add_argument("--analysis-model", dest="analysis_model", default="qwen3-vl:8b",
+                   help="Ollama vision model used for keyframe analysis (default: qwen3-vl:8b)")
+    p.add_argument("--analysis", dest="analysis_model",
+                   default=argparse.SUPPRESS,
+                   help="Alias for --analysis-model")
     return p.parse_args(argv)
 
 
@@ -720,7 +744,13 @@ def main(argv=None) -> int:
                   "using the existing storyboard.", file=sys.stderr)
         project = slugify(args.project)
     else:
-        project = slugify(args.project) if args.project else slugify(args.prompt[:40])
+        if args.project:
+            project = slugify(args.project)
+        elif args.prompt:
+            project = slugify(args.prompt[:40])
+        else:
+            print("Error: --keyframes requires --project", file=sys.stderr)
+            return 1
     base_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
 
     try:
@@ -861,7 +891,7 @@ def main(argv=None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         traceback.print_exception(exc.__cause__ or exc)
         return 1
-    except (RuntimeError, ValueError) as exc:
+    except (RuntimeError, ValueError, OSError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

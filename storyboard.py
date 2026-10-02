@@ -49,9 +49,14 @@ def validate_storyboard(data: dict, research: dict | None = None) -> list[dict]:
             raise ValueError(f"Scene #{i} has non-integer duration: {scene['duration']!r}")
         if duration <= 0:
             raise ValueError(f"Scene #{i} has non-positive duration: {duration}")
-        for field in ("image_prompt", "video_prompt", "narration"):
+        for field in ("image_prompt", "video_prompt"):
             if not isinstance(scene[field], str) or not scene[field].strip():
                 raise ValueError(f"Scene #{i} field {field!r} must be a non-empty string.")
+        # Narration may be empty (keyframe storyboards default to "") but
+        # must be present as a string; audio providers fail clearly on
+        # empty narration at generation time.
+        if "narration" not in scene or not isinstance(scene["narration"], str):
+            raise ValueError(f"Scene #{i} field 'narration' must be a string (may be empty).")
         entry = {
             "id": scene_id,
             "duration": duration,
