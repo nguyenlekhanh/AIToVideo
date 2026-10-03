@@ -1,0 +1,447 @@
+{
+  "1239": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan_animate_2_distill_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "1009": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    }
+  },
+  "1004": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "\u8272\u8c03\u8273\u4e3d\uff0c\u8fc7\u66dd\uff0c\u9759\u6001\uff0c\u7ec6\u8282\u6a21\u7cca\u4e0d\u6e05\uff0c\u5b57\u5e55\uff0c\u98ce\u683c\uff0c\u4f5c\u54c1\uff0c\u753b\u4f5c\uff0c\u753b\u9762\uff0c\u9759\u6b62\uff0c\u6574\u4f53\u53d1\u7070\uff0c\u6700\u5dee\u8d28\u91cf\uff0c\u4f4e\u8d28\u91cf\uff0cJPEG\u538b\u7f29\u6b8b\u7559\uff0c\u4e11\u964b\u7684\uff0c\u6b8b\u7f3a\u7684\uff0c\u591a\u4f59\u7684\u624b\u6307\uff0c\u753b\u5f97\u4e0d\u597d\u7684\u624b\u90e8\uff0c\u753b\u5f97\u4e0d\u597d\u7684\u8138\u90e8\uff0c\u7578\u5f62\u7684\uff0c\u6bc1\u5bb9\u7684\uff0c\u5f62\u6001\u7578\u5f62\u7684\u80a2\u4f53\uff0c\u624b\u6307\u878d\u5408\uff0c\u9759\u6b62\u4e0d\u52a8\u7684\u753b\u9762\uff0c\u6742\u4e71\u7684\u80cc\u666f\uff0c\u4e09\u6761\u817f\uff0c\u80cc\u666f\u4eba\u5f88\u591a\uff0c\u5012\u7740\u8d70",
+      "clip": [
+        "1009",
+        0
+      ]
+    }
+  },
+  "1003": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": [
+        "605",
+        0
+      ],
+      "clip": [
+        "1009",
+        0
+      ]
+    }
+  },
+  "1075": {
+    "class_type": "CLIPVisionLoader",
+    "inputs": {
+      "clip_name": "clip_vision_h.safetensors"
+    }
+  },
+  "1007": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "Wan2_1_VAE_bf16.safetensors"
+    }
+  },
+  "1222": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": [
+        "604",
+        0
+      ],
+      "clip": [
+        "1009",
+        0
+      ]
+    }
+  },
+  "1257": {
+    "class_type": "ContextWindowsManual",
+    "inputs": {
+      "model": [
+        "1239",
+        0
+      ],
+      "context_length": 21,
+      "context_overlap": 8,
+      "context_schedule": "standard_static",
+      "context_stride": 1,
+      "closed_loop": false,
+      "fuse_method": "pyramid",
+      "dim": 2,
+      "freenoise": true,
+      "cond_retain_index_list": "0",
+      "split_conds_to_windows": false,
+      "latent_retain_index_list": "",
+      "causal_window_fix": true
+    }
+  },
+  "1247": {
+    "class_type": "WanAnimate2ToVideo",
+    "inputs": {
+      "positive": [
+        "1003",
+        0
+      ],
+      "negative": [
+        "1004",
+        0
+      ],
+      "vae": [
+        "1007",
+        0
+      ],
+      "width": [
+        "1256",
+        0
+      ],
+      "height": [
+        "1256",
+        1
+      ],
+      "length": 81,
+      "batch_size": 1,
+      "video_frame_offset": 0,
+      "pose_strength": 1,
+      "pose_start_percent": 0,
+      "pose_end_percent": 1,
+      "reference_image_strength": 1,
+      "reference_image": [
+        "1244",
+        0
+      ],
+      "pose_video": [
+        "1243",
+        0
+      ],
+      "clip_vision_output": [
+        "1076",
+        0
+      ],
+      "positive_pose": [
+        "1222",
+        0
+      ],
+      "clip_vision_output_pose": [
+        "1220",
+        0
+      ]
+    }
+  },
+  "1258": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "switch": false,
+      "on_false": [
+        "1239",
+        0
+      ],
+      "on_true": [
+        "1257",
+        0
+      ]
+    }
+  },
+  "1076": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": [
+        "1075",
+        0
+      ],
+      "image": [
+        "1244",
+        0
+      ],
+      "crop": "none"
+    }
+  },
+  "1244": {
+    "class_type": "ResizeImageMaskNode",
+    "inputs": {
+      "input": [
+        "606",
+        0
+      ],
+      "resize_type": "scale dimensions",
+      "resize_type.crop": "center",
+      "scale_method": "area",
+      "resize_type.width": [
+        "1256",
+        0
+      ],
+      "resize_type.height": [
+        "1256",
+        1
+      ]
+    }
+  },
+  "1018": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "1224",
+        0
+      ],
+      "scheduler": "simple",
+      "steps": 10,
+      "denoise": 1
+    }
+  },
+  "1095": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": [
+        "1224",
+        0
+      ],
+      "shift": 5
+    }
+  },
+  "1027": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "lcm"
+    }
+  },
+  "1224": {
+    "class_type": "WanAnimate2Cache",
+    "inputs": {
+      "model": [
+        "1258",
+        0
+      ],
+      "device": "gpu",
+      "dtype": "int8"
+    }
+  },
+  "1241": {
+    "class_type": "GetVideoComponents",
+    "inputs": {
+      "video": [
+        "240",
+        0
+      ]
+    }
+  },
+  "1256": {
+    "class_type": "GetImageSize",
+    "inputs": {
+      "image": [
+        "1243",
+        0
+      ]
+    }
+  },
+  "1019": {
+    "class_type": "SamplerCustom",
+    "inputs": {
+      "model": [
+        "1095",
+        0
+      ],
+      "add_noise": true,
+      "noise_seed": 455396333157379,
+      "cfg": 1,
+      "positive": [
+        "1247",
+        0
+      ],
+      "negative": [
+        "1247",
+        1
+      ],
+      "sampler": [
+        "1027",
+        0
+      ],
+      "sigmas": [
+        "1018",
+        0
+      ],
+      "latent_image": [
+        "1247",
+        2
+      ]
+    }
+  },
+  "1220": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": [
+        "1075",
+        0
+      ],
+      "image": [
+        "1236",
+        0
+      ],
+      "crop": "none"
+    }
+  },
+  "1236": {
+    "class_type": "ImageFromBatch",
+    "inputs": {
+      "image": [
+        "1243",
+        0
+      ],
+      "batch_index": 0,
+      "length": 1
+    }
+  },
+  "1243": {
+    "class_type": "ResizeImageMaskNode",
+    "inputs": {
+      "input": [
+        "1241",
+        0
+      ],
+      "resize_type": "scale dimensions",
+      "resize_type.crop": "center",
+      "scale_method": "area",
+      "resize_type.width": 482,
+      "resize_type.height": 854
+    }
+  },
+  "1006": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "1223",
+        0
+      ],
+      "vae": [
+        "1007",
+        0
+      ]
+    }
+  },
+  "1223": {
+    "class_type": "TrimVideoLatent",
+    "inputs": {
+      "samples": [
+        "1019",
+        0
+      ],
+      "trim_amount": [
+        "1247",
+        3
+      ]
+    }
+  },
+  "1297": {
+    "class_type": "PrimitiveBoolean",
+    "inputs": {
+      "value": false
+    }
+  },
+  "1298": {
+    "class_type": "ImageFromBatch",
+    "inputs": {
+      "image": [
+        "1006",
+        0
+      ],
+      "batch_index": 1,
+      "length": 4096
+    }
+  },
+  "1299": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "switch": [
+        "1297",
+        0
+      ],
+      "on_false": [
+        "1006",
+        0
+      ],
+      "on_true": [
+        "1298",
+        0
+      ]
+    }
+  },
+  "189": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": null
+    }
+  },
+  "240": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": null
+    }
+  },
+  "606": {
+    "class_type": "easy cleanGpuUsed",
+    "inputs": {
+      "anything": [
+        "189",
+        0
+      ]
+    }
+  },
+  "604": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": "A cat doing energetic dance"
+    }
+  },
+  "605": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": null
+    }
+  },
+  "288": {
+    "class_type": "GetVideoComponents",
+    "inputs": {
+      "video": [
+        "240",
+        0
+      ]
+    }
+  },
+  "245": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "1299",
+        0
+      ],
+      "fps": [
+        "288",
+        2
+      ],
+      "audio": [
+        "288",
+        1
+      ],
+      "bit_depth": 8,
+      "color_space": "sRGB"
+    }
+  },
+  "246": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "245",
+        0
+      ],
+      "filename_prefix": null,
+      "format": "auto",
+      "codec": "auto"
+    }
+  }
+}

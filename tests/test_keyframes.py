@@ -62,8 +62,17 @@ class KeyframeCliTest(unittest.TestCase):
         self.assertEqual(args.analysis_model, "qwen2.5vl:7b")
 
     def test_default_model(self):
+        # No flag: per-mode defaults resolve in the flow branches
+        # (qwen3-vl:8b for --keyframes, qwen3:8b for --script).
         args = main.parse_args(["--project", "w", "--keyframes", "kf"])
-        self.assertEqual(args.analysis_model, "qwen3-vl:8b")
+        self.assertIsNone(getattr(args, "analysis_model", None))
+        self.assertEqual(
+            getattr(args, "analysis_model", None) or "qwen3-vl:8b",
+            "qwen3-vl:8b")
+        script_args = main.parse_args(["--project", "b", "--script", "s.txt"])
+        self.assertEqual(
+            getattr(script_args, "analysis_model", None) or "qwen3:8b",
+            "qwen3:8b")
 
     def test_prompt_optional_with_keyframes(self):
         args = main.parse_args(["--project", "w", "--keyframes", "kf"])

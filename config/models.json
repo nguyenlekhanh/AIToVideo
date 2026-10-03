@@ -49,6 +49,11 @@
       "provider": "wan",
       "workflow": "workflows/video/wan_i2v.json",
       "negative_prompt": "blurry, low quality, distorted, watermark, static"
+    },
+    "wan_animate2": {
+      "provider": "wan_animate2",
+      "workflow": "workflows/video/wan_animate2.json",
+      "negative_prompt": ""
     }
   },
   "audio": {

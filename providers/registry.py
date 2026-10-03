@@ -22,6 +22,7 @@ IMAGE_PROVIDERS = {
 VIDEO_PROVIDERS = {
     "ltx": ("providers.video.ltx", "LtxVideoProvider"),
     "wan": ("providers.video.wan", "WanVideoProvider"),
+    "wan_animate2": ("providers.video.wan_animate2", "WanAnimate2Provider"),
 }
 AUDIO_PROVIDERS = {
     "edge_tts": ("providers.audio.edge_tts", "EdgeTtsProvider"),

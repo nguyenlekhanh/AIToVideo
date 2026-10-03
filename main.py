@@ -21,6 +21,7 @@ import ffmpeg as ff
 import ollama as ol
 import storyboard as sb
 import state as st
+import script as sc
 from subject import SubjectProfile, compose_scene_prompt
 from providers.audio.base import AudioRequest
 from providers.comfy import ComfyClient
@@ -100,14 +101,22 @@ def validate_cli_combination(args) -> str | None:
     Returns an error message, or None when the combination is valid.
     Pure function (no I/O) so unit tests can cover every combination.
     """
-    if args.prompt is None and not args.resume and not getattr(args, "keyframes", None):
-        return "the prompt is required unless --resume or --keyframes is used"
+    if args.prompt is None and not args.resume and not getattr(args, "keyframes", None) and not getattr(args, "script", None):
+        return "the prompt is required unless --resume, --keyframes or --script is used"
     if getattr(args, "prompt", None) and getattr(args, "keyframes", None):
         return "cannot use --keyframes with a prompt"
+    if getattr(args, "prompt", None) and getattr(args, "script", None):
+        return "cannot use --script with a prompt"
+    if getattr(args, "keyframes", None) and getattr(args, "script", None):
+        return "cannot use --script with --keyframes (choose one input mode)"
     if getattr(args, "keyframes", None) and args.resume:
         return "cannot use --keyframes with --resume (resume loads the existing storyboard)"
+    if getattr(args, "script", None) and args.resume:
+        return "cannot use --script with --resume (resume loads the existing storyboard)"
     if getattr(args, "keyframes", None) and not getattr(args, "project", None):
         return "--keyframes requires --project"
+    if getattr(args, "script", None) and not getattr(args, "project", None):
+        return "--script requires --project"
     if args.resume and not args.project:
         return "--resume requires --project"
     if args.stage is not None and not args.resume:
@@ -242,12 +251,19 @@ def load_project_scenes(base_dir: str) -> list[dict]:
 def plan_resume_stages(*, scenes: list[dict], img_dir: str, vid_dir: str,
                        aud_dir: str, final_path: str, default_duration: float,
                        stage: str | None = None,
-                       only_scene: int | None = None):
+                       only_scene: int | None = None,
+                       video_needs_images: bool = True,
+                       check_video_duration: bool = True):
     """Decide which stages must run. No writes, no network, no generation.
 
     Returns (stages_to_run, problems). stages_to_run is a list drawn from
     ["image", "video", "audio", "finalize"]. problems are clear,
     actionable error strings (e.g. missing prerequisite outputs).
+
+    video_needs_images=False skips the scene-image prerequisite (motion
+    backends with a pinned reference image). check_video_duration=False
+    validates clips by existence/readability only (fixed-length backends
+    such as wan_animate2).
     """
     ids = scene_ids(scenes, only_scene)
     by_id = {int(s["id"]): s for s in scenes}
@@ -256,7 +272,8 @@ def plan_resume_stages(*, scenes: list[dict], img_dir: str, vid_dir: str,
         return st.valid_image_file(scene_path(img_dir, sid, "png"))
 
     def videos_ok(sid: int) -> bool:
-        expected = resolve_scene_duration(by_id[sid], default_duration)
+        expected = (resolve_scene_duration(by_id[sid], default_duration)
+                    if check_video_duration else None)
         return st.valid_video_file(scene_path(vid_dir, sid, "mp4"), expected)
 
     def audios_ok(sid: int) -> bool:
@@ -265,11 +282,12 @@ def plan_resume_stages(*, scenes: list[dict], img_dir: str, vid_dir: str,
     if stage == "image":
         return ["image"], []
     if stage == "video":
-        missing = [f"scene_{sid:03d}" for sid in ids if not images_ok(sid)]
-        if missing:
-            return [], [f"Cannot run video stage: required image(s) missing or "
-                        f"invalid: {', '.join(missing)}. "
-                        f"Generate images first (--stage image)."]
+        if video_needs_images:
+            missing = [f"scene_{sid:03d}" for sid in ids if not images_ok(sid)]
+            if missing:
+                return [], [f"Cannot run video stage: required image(s) missing or "
+                            f"invalid: {', '.join(missing)}. "
+                            f"Generate images first (--stage image)."]
         return ["video"], []
     if stage == "audio":
         return ["audio"], []
@@ -278,10 +296,11 @@ def plan_resume_stages(*, scenes: list[dict], img_dir: str, vid_dir: str,
             return [], ["--scene does not apply to --stage finalize: "
                         "final.mp4 always covers all scenes in storyboard order."]
         all_ids = sorted(by_id)
-        bad_clips = [f"scene_{sid:03d}" for sid in all_ids
-                     if not st.valid_video_file(
-                         scene_path(vid_dir, sid, "mp4"),
-                         resolve_scene_duration(by_id[sid], default_duration))]
+        def clip_ok(sid: int) -> bool:
+            expected = (resolve_scene_duration(by_id[sid], default_duration)
+                        if check_video_duration else None)
+            return st.valid_video_file(scene_path(vid_dir, sid, "mp4"), expected)
+        bad_clips = [f"scene_{sid:03d}" for sid in all_ids if not clip_ok(sid)]
         bad_audio = [f"scene_{sid:03d}" for sid in all_ids
                      if not st.valid_audio_file(scene_path(aud_dir, sid, "mp3"))]
         problems = []
@@ -368,24 +387,57 @@ def run_image_stage(ctx: dict, scenes: list[dict], only_scene=None,
 
 def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                     only_scene=None, force_all: bool = False) -> dict:
-    """Generate clips. Per-scene storyboard durations preserved. Atomic."""
+    """Generate clips. Per-scene storyboard durations preserved. Atomic.
+
+    Motion backends (wan_animate2 + --motion-dir): one driving clip per
+    scene (001 -> scene 1, ...), same reference image for every job when
+    --reference-image is pinned, fixed-length outputs validated by
+    existence/readability instead of storyboard duration.
+    """
     provider = ctx["video_provider"]
     state, state_path = ctx["state"], ctx["state_path"]
     by_id = {int(s["id"]): s for s in scenes}
     todo = scene_ids(scenes, only_scene)
     force = force_all or only_scene is not None
+    motion_clips = (ctx.get("motion_clips")
+                    if getattr(provider, "uses_motion_clips", False) else None)
+    pinned_ref = (ctx.get("reference_image")
+                  if getattr(provider, "supports_pinned_reference", False)
+                  else None)
+    skip_duration = bool(getattr(provider, "fixed_duration", False))
+    if motion_clips is not None:
+        print(f"  Motion clips: {len(motion_clips)} "
+              f"({os.path.basename(os.path.dirname(motion_clips[0]))}/)")
+        if len(motion_clips) > len(scenes):
+            print(f"  Note: ignoring {len(motion_clips) - len(scenes)} extra "
+                  f"motion clip(s) beyond {len(scenes)} scenes.")
+    if pinned_ref is not None:
+        print(f"  Reference image (pinned for all jobs): {pinned_ref}")
     print("[3/5] Generating video clips")
     paths, completed = {}, []
     for sid in todo:
         scene = by_id[sid]
         expected = resolve_scene_duration(scene, ctx["default_duration"])
-        src = image_paths.get(sid)
-        if src is None or not st.valid_image_file(src):
-            raise ValueError(
-                f"Cannot generate video for scene {sid}: required image "
-                f"missing or invalid ({src or 'none'}). Generate images first.")
+        check_duration = None if skip_duration else expected
+        if pinned_ref is not None:
+            src = pinned_ref
+        else:
+            src = image_paths.get(sid)
+            if src is None or not st.valid_image_file(src):
+                raise ValueError(
+                    f"Cannot generate video for scene {sid}: required image "
+                    f"missing or invalid ({src or 'none'}). Generate images first.")
+        motion = None
+        if motion_clips is not None:
+            if sid - 1 >= len(motion_clips):
+                raise ValueError(
+                    f"Cannot generate video for scene {sid}: only "
+                    f"{len(motion_clips)} motion clip(s) in "
+                    f"{ctx.get('motion_dir', 'motion-dir')}; scenes are "
+                    f"mapped 001 -> scene 1, 002 -> scene 2, ...")
+            motion = motion_clips[sid - 1]
         dest = scene_path(ctx["vid_dir"], sid, "mp4")
-        if not force and st.valid_video_file(dest, expected):
+        if not force and st.valid_video_file(dest, check_duration):
             st.mark_scene_complete(state, "video", sid)
             st.save_state(state_path, state)
             print(f"    -> {dest} (reused, valid)")
@@ -393,13 +445,18 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
             completed.append(sid)
             continue
         tmp = dest + ".tmp"
-        print(f"  scene {sid}/{len(scenes)}: video ...")
+        if motion is not None:
+            print(f"  scene {sid}/{len(scenes)}: video "
+                  f"(ref={os.path.basename(str(src))}, "
+                  f"motion={os.path.basename(motion)}) ...")
+        else:
+            print(f"  scene {sid}/{len(scenes)}: video ...")
         try:
             result = provider.generate(VideoRequest(
                 prompt=scene["video_prompt"], negative_prompt=ctx["vid_neg"],
                 input_image=src, width=ctx["target_w"], height=ctx["target_h"],
                 duration=expected, seed=ctx["base_seed"] + 1000 + sid,
-                output_path=tmp))
+                output_path=tmp, motion_video=(Path(motion) if motion else None)))
         except KeyboardInterrupt:
             _cleanup_tmp(tmp)
             raise StageInterrupted(
@@ -407,17 +464,22 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
         except Exception:
             _cleanup_tmp(tmp)
             raise
-        if not st.valid_video_file(tmp, expected):
+        if not st.valid_video_file(tmp, check_duration):
             _cleanup_tmp(tmp)
             raise ProviderError(
+                ctx["video_model"],
                 f"VideoProvider ({ctx['video_model']}) scene {sid} output "
                 f"failed validation")
         os.replace(tmp, dest)
         result.path = Path(dest)
         st.mark_scene_complete(state, "video", sid)
         st.save_state(state_path, state)
-        print(f"    -> {dest} ({result.width}x{result.height}, "
-              f"{expected:g}s requested)")
+        if skip_duration:
+            print(f"    -> {dest} ({result.width}x{result.height}, "
+                  f"fixed-length backend output)")
+        else:
+            print(f"    -> {dest} ({result.width}x{result.height}, "
+                  f"{expected:g}s requested)")
         paths[sid] = dest
         completed.append(sid)
     return paths
@@ -550,6 +612,26 @@ def run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model, num_scenes,
             num_scenes=args.scenes,
             timeout=int(ollama_cfg.get("timeout", 600)))
         research_meta = None
+    elif getattr(args, "script", None):
+        # Mode C: long source text -> Qwen condensation -> video script
+        # -> storyboard. Text-only Qwen calls; master subject profile
+        # persisted with the storyboard for all downstream stages.
+        analysis_model = getattr(args, "analysis_model", None) or "qwen3:8b"
+        base_dir = os.path.join(APP_DIR, "projects", args.project)
+        script_path = os.path.join(base_dir, args.script);
+        raw, condensed, source_text = sc.generate_from_script(
+            script_path, model=analysis_model, base_url=ollama_url,
+            num_scenes=args.scenes,
+            timeout=int(ollama_cfg.get("timeout", 600)),
+            subject=getattr(args, "subject", "auto"))
+        with open(os.path.join(ctx["base_dir"], "source.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(source_text)
+        sc.save_condensed_script(
+            condensed, os.path.join(ctx["base_dir"], "condensed_script.json"))
+        print(f"  Saved condensed script -> "
+              f"{os.path.join(ctx['base_dir'], 'condensed_script.json')}")
+        research_meta = None
     else:
         research_context, research_meta = maybe_research(args.research, args.prompt)
         if research_meta is not None:
@@ -673,7 +755,7 @@ def maybe_research(research_mode: str, topic: str) -> tuple[str | None, dict | N
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Minimal AI video generator (provider architecture).")
     p.add_argument("prompt", nargs="?", default=None,
-                   help="Video idea (required unless --resume or --keyframes is used)")
+                   help="Video idea (required unless --resume, --keyframes or --script is used)")
     p.add_argument("--project", default=None, help="Project name (default: derived from prompt)")
     p.add_argument("--image-model", default="sd15", help="Image model from config/models.json")
     p.add_argument("--video-model", default="ltx", help="Video model from config/models.json")
@@ -709,11 +791,26 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=None, help="Base random seed")
     p.add_argument("--keyframes", default=None,
                    help="Directory containing source keyframe images for visual analysis")
-    p.add_argument("--analysis-model", dest="analysis_model", default="qwen3-vl:8b",
-                   help="Ollama vision model used for keyframe analysis (default: qwen3-vl:8b)")
+    p.add_argument("--analysis-model", dest="analysis_model",
+                   default=argparse.SUPPRESS,
+                   help="Ollama model used for storyboard analysis "
+                        "(defaults: qwen3-vl:8b with --keyframes, "
+                        "qwen3:8b with --script)")
     p.add_argument("--analysis", dest="analysis_model",
                    default=argparse.SUPPRESS,
                    help="Alias for --analysis-model")
+    p.add_argument("--script", default=None,
+                   help="Source text file for Mode C script-to-storyboard "
+                        "(long text is condensed by Qwen first)")
+    p.add_argument("--subject", default="auto",
+                   help="Master subject profile for Mode C: 'auto' (derived "
+                        "from the source) or a preset (none, god)")
+    p.add_argument("--reference-image", default=None,
+                   help="Single reference image reused for every wan_animate2 "
+                        "motion job (defaults to each scene's own image)")
+    p.add_argument("--motion-dir", default=None,
+                   help="Directory of driving motion clips for "
+                        "--video-model wan_animate2 (001.mp4, 002.mp4, ...)")
     return p.parse_args(argv)
 
 
@@ -749,7 +846,7 @@ def main(argv=None) -> int:
         elif args.prompt:
             project = slugify(args.prompt[:40])
         else:
-            print("Error: --keyframes requires --project", file=sys.stderr)
+            print("Error: --keyframes/--script requires --project", file=sys.stderr)
             return 1
     base_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
 
@@ -767,6 +864,26 @@ def main(argv=None) -> int:
     except UnknownModelError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    # Motion-control video backends (wan_animate2): driving clips from
+    # --motion-dir plus an optional pinned --reference-image reused for
+    # every job. Resolved here so planning, resume and stages agree.
+    wan_motion = (vid_entry.get("provider") == "wan_animate2"
+                  and bool(args.motion_dir))
+    if args.motion_dir and vid_entry.get("provider") != "wan_animate2":
+        print("Note: --motion-dir is only used by --video-model "
+              "wan_animate2; ignoring.")
+    reference_image = None
+    if args.reference_image:
+        if not os.path.isfile(args.reference_image):
+            print(f"Error: --reference-image not found: "
+                  f"{args.reference_image}", file=sys.stderr)
+            return 1
+        if vid_entry.get("provider") != "wan_animate2":
+            print("Note: --reference-image is only used by --video-model "
+                  "wan_animate2; ignoring.")
+        else:
+            reference_image = os.path.abspath(args.reference_image)
 
     print(f"Image model: {args.image_model}")
     print(f"Video model: {args.video_model}")
@@ -808,7 +925,9 @@ def main(argv=None) -> int:
             scenes=resume_scenes, img_dir=img_dir, vid_dir=vid_dir,
             aud_dir=aud_dir, final_path=final_path,
             default_duration=default_duration, stage=args.stage,
-            only_scene=args.scene)
+            only_scene=args.scene,
+            video_needs_images=not (wan_motion and reference_image),
+            check_video_duration=not wan_motion)
         if resume_problems:
             print("Error: " + "\nError: ".join(resume_problems), file=sys.stderr)
             return 1
@@ -853,6 +972,25 @@ def main(argv=None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # Motion-control setup: discover driving clips now (fail fast) when a
+    # video run is planned; stage-scoped runs (image/audio/finalize) skip it.
+    motion_clips: list[str] | None = None
+    if getattr(video_provider, "uses_motion_clips", False):
+        if "video" in stages_planned:
+            if not args.motion_dir:
+                print(f"Error: --video-model {args.video_model} requires "
+                      f"--motion-dir (directory of 001.mp4, 002.mp4, ...).",
+                      file=sys.stderr)
+                return 1
+            try:
+                motion_clips = video_provider.discover_motion_clips(args.motion_dir)
+            except Exception as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            print(f"Motion dir: {args.motion_dir} ({len(motion_clips)} clips)")
+    if reference_image is not None:
+        print(f"Reference image: {reference_image}")
+
     img_neg = img_entry.get("negative_prompt", "")
     vid_neg = vid_entry.get("negative_prompt", "")
 
@@ -877,6 +1015,8 @@ def main(argv=None) -> int:
         "pitch": str(tts_cfg.get("pitch", "+0Hz")),
         "default_duration": default_duration, "char_ref": None,
         "subject": None, "ffmpeg_exe": ffmpeg_exe,
+        "reference_image": reference_image, "motion_clips": motion_clips,
+        "motion_dir": args.motion_dir,
     }
 
     try:

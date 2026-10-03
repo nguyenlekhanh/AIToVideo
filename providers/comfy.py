@@ -174,9 +174,21 @@ class ComfyClient:
 
     def upload_image(self, image_path: str) -> str:
         """Upload a local image to the ComfyUI input dir. Returns stored name."""
+        return self._upload_file(image_path, "Image")
+
+    def upload_video(self, video_path: str) -> str:
+        """Upload a local motion clip to the ComfyUI input dir.
+
+        Same multipart input upload as images; LoadVideo combo nodes read
+        from the input dir, so the stored filename is what the workflow
+        needs. Returns stored name.
+        """
+        return self._upload_file(video_path, "Video")
+
+    def _upload_file(self, file_path: str, kind: str) -> str:
         boundary = "----ai-video-boundary"
-        filename = os.path.basename(image_path)
-        with open(image_path, "rb") as f:
+        filename = os.path.basename(file_path)
+        with open(file_path, "rb") as f:
             file_bytes = f.read()
         body = (
             f"--{boundary}\r\n"
@@ -195,7 +207,7 @@ class ComfyClient:
             resp = conn.getresponse()
             raw = resp.read().decode("utf-8", "replace")
             if resp.status != 200:
-                raise ComfyError(f"Image upload failed ({resp.status}): {raw[:1000]}")
+                raise ComfyError(f"{kind} upload failed ({resp.status}): {raw[:1000]}")
             return json.loads(raw).get("name", filename)
         finally:
             conn.close()

@@ -16,6 +16,7 @@ class VideoRequest:
     duration: float  # seconds; provider converts to frames for its model
     seed: int | None
     output_path: Path
+    motion_video: Path | None = None  # driving clip (wan_animate2 only)
 
 
 @dataclass
