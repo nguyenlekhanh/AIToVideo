@@ -21,6 +21,7 @@ import ffmpeg as ff
 import ollama as ol
 import storyboard as sb
 import state as st
+import continuous as ch
 import script as sc
 from subject import SubjectProfile, compose_scene_prompt
 from providers.audio.base import AudioRequest
@@ -103,6 +104,43 @@ def validate_cli_combination(args) -> str | None:
     """
     if args.prompt is None and not args.resume and not getattr(args, "keyframes", None) and not getattr(args, "script", None):
         return "the prompt is required unless --resume, --keyframes or --script is used"
+    continuous = bool(getattr(args, "continuous", False))
+    if not continuous:
+        if getattr(args, "image", None) is not None:
+            return "--image requires --continuous"
+        if getattr(args, "clips", None) is not None:
+            return "--clips requires --continuous"
+        if getattr(args, "duration", None) is not None:
+            return "--duration requires --continuous"
+        if getattr(args, "identity_file", None) is not None:
+            return "--identity-file requires --continuous"
+    if continuous:
+        if getattr(args, "keyframes", None) or getattr(args, "script", None):
+            return "cannot use --keyframes/--script with --continuous (choose one input mode)"
+        if args.resume:
+            return "cannot use --resume with --continuous (re-running the same command resumes the chain)"
+        if args.stage is not None:
+            return "cannot use --stage with --continuous (use --scene N to regenerate one clip)"
+        if getattr(args, "character_reference", None):
+            return "--character-reference is not used in --continuous mode"
+        if not getattr(args, "image", None):
+            return "--continuous requires --image (reference/start image)"
+        if getattr(args, "scenes", None) is not None:
+            return "use --clips (not --scenes) with --continuous"
+        clips = getattr(args, "clips", None)
+        duration = getattr(args, "duration", None)
+        if clips is not None and clips < 1:
+            return "--clips must be a positive clip count"
+        if duration is not None and duration <= 0:
+            return "--duration must be a positive number of seconds"
+        if clips is not None and duration is not None:
+            if not 3 * clips <= duration <= 15 * clips:
+                return (f"--duration {duration:g}s is infeasible for "
+                        f"--clips {clips} (each clip is 3..15s; need "
+                        f"{3 * clips}..{15 * clips}s)")
+        if normalize_stop_after(args.stop_after) not in ("all", "storyboard"):
+            return "--continuous only supports --stop-after storyboard|all"
+        return None
     if getattr(args, "prompt", None) and getattr(args, "keyframes", None):
         return "cannot use --keyframes with a prompt"
     if getattr(args, "prompt", None) and getattr(args, "script", None):
@@ -121,7 +159,7 @@ def validate_cli_combination(args) -> str | None:
         return "--resume requires --project"
     if args.stage is not None and not args.resume:
         return "--stage requires --resume"
-    if args.scene is not None and not args.resume:
+    if args.scene is not None and not args.resume and not bool(getattr(args, "continuous", False)):
         return "--scene requires --resume"
     if args.scene is not None and args.scene < 1:
         return "--scene must be a positive 1-based scene number"
@@ -143,6 +181,38 @@ def resolve_scene_duration(scene: dict, default_duration: float) -> float:
     if duration <= 0:
         return default_duration
     return duration
+
+
+def ensure_clean_visuals(scenes, rewrite_fn, max_rounds=2):
+    """Bounded regeneration of image/video prompts that request rendered
+    text/numbers or multi-panel compositions.
+
+    scenes: validated scene list (mutated in place on rewrite). rewrite_fn
+    takes (scene, reason) and returns an updated scene with new prompts
+    (narration, ids, grounding and fact/source ids preserved). Returns
+    (scenes, rewrite_count). Raises ValueError when prompts are still
+    unclean after max_rounds. Research grounding is never touched here.
+    """
+    rewrites = 0
+    for _ in range(max_rounds + 1):
+        failing: dict[int, str] = {}
+        for i, scene in enumerate(scenes, start=1):
+            problems = sb.validate_visual_prompts([scene])
+            if problems:
+                failing[i] = problems[0]
+        if not failing:
+            return scenes, rewrites
+        if rewrites >= max_rounds:
+            raise ValueError(
+                "Storyboard visual prompts still request rendered "
+                "text/statistics or multi-panel layouts after "
+                f"{max_rounds} rewrites:\n- "
+                + "\n- ".join(failing.values()))
+        for index in sorted(failing):
+            scenes[index - 1] = rewrite_fn(
+                dict(scenes[index - 1]), failing[index])
+            rewrites += 1
+    raise AssertionError("unreachable")  # loop always returns or raises above
 
 
 def ensure_grounded_scenes(scenes, research_meta, rewrite_fn, max_rounds=2):
@@ -617,7 +687,7 @@ def run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model, num_scenes,
         # -> storyboard. Text-only Qwen calls; master subject profile
         # persisted with the storyboard for all downstream stages.
         analysis_model = getattr(args, "analysis_model", None) or "qwen3:8b"
-        base_dir = os.path.join(APP_DIR, "projects", args.project)
+        base_dir = os.path.join(APP_DIR, "projects", ctx["project"])
         script_path = os.path.join(base_dir, args.script);
         raw, condensed, source_text = sc.generate_from_script(
             script_path, model=analysis_model, base_url=ollama_url,
@@ -638,6 +708,8 @@ def run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model, num_scenes,
             quality = research_meta.get("research_quality", "?")
             print(f"  Research: web ({len(research_meta['sources'])} sources, "
                   f"quality={quality})")
+        print("[Storyboard] planner starting "
+              f"(research quality={research_meta.get('research_quality', 'none') if research_meta else 'none'})")
         raw = ol.generate_storyboard(args.prompt, model=ollama_model,
                                      base_url=ollama_url, num_scenes=num_scenes,
                                      timeout=int(ollama_cfg.get("timeout", 180)),
@@ -656,6 +728,16 @@ def run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model, num_scenes,
         print(f"  Semantic warning: {warning}")
     if rewrite_count:
         print(f"  Rewrote {rewrite_count} scene narration(s) for grounding.")
+
+    def rewrite_visuals(scene, reason):
+        return ol.rewrite_scene_visuals(
+            scene, reason, model=ollama_model,
+            base_url=ollama_url, timeout=rewrite_timeout)
+
+    scenes, visual_rewrites = ensure_clean_visuals(scenes, rewrite_visuals)
+    if visual_rewrites:
+        print(f"  Rewrote {visual_rewrites} scene visual prompt(s) for "
+              f"clean single-frame generation.")
     subject = SubjectProfile.from_dict(
         raw.get("subject") if isinstance(raw, dict) else None)
     sb.save_storyboard(scenes, ctx["storyboard_path"], subject, research_meta)
@@ -795,7 +877,7 @@ def parse_args(argv=None):
                    default=argparse.SUPPRESS,
                    help="Ollama model used for storyboard analysis "
                         "(defaults: qwen3-vl:8b with --keyframes, "
-                        "qwen3:8b with --script)")
+                        "qwen3:8b with --script or --continuous)")
     p.add_argument("--analysis", dest="analysis_model",
                    default=argparse.SUPPRESS,
                    help="Alias for --analysis-model")
@@ -811,7 +893,180 @@ def parse_args(argv=None):
     p.add_argument("--motion-dir", default=None,
                    help="Directory of driving motion clips for "
                         "--video-model wan_animate2 (001.mp4, 002.mp4, ...)")
+    p.add_argument("--continuous", action="store_true",
+                   help="Chain mode: one image + one prompt -> Qwen-planned "
+                        "continuous clips (last frame chains to next)")
+    p.add_argument("--image", default=None,
+                   help="Reference/start image for --continuous mode")
+    p.add_argument("--clips", type=int, default=None,
+                   help="Exact clip count for --continuous mode")
+    p.add_argument("--duration", type=float, default=None,
+                   help="Total target duration in seconds for --continuous")
+    p.add_argument("--identity-file", default=None,
+                   help="Explicit master identity JSON for --continuous "
+                        "(skips automatic identity creation)")
     return p.parse_args(argv)
+
+
+def run_continuous_command(args, cfg) -> int:
+    """ONE IMAGE + ONE PROMPT -> chained continuous video (Mode D).
+
+    Self-contained flow reusing existing pieces only: registry video
+    providers via VideoRequest, ComfyUI client, Ollama planner, ffmpeg
+    concat/extraction, resolve_dimensions. Never touches storyboard.json,
+    state.json, or the image/audio/finalize stages.
+    """
+    ollama_cfg = cfg.get("ollama", {})
+    comfy_cfg = cfg.get("comfyui", {})
+    ff_cfg = cfg.get("ffmpeg", {})
+    ollama_url = args.ollama_url or ollama_cfg.get("url", "http://127.0.0.1:11434")
+    model = getattr(args, "analysis_model", None) or "qwen3:8b"
+    comfy_url = args.comfy_url or comfy_cfg.get("url", "http://127.0.0.1:8188")
+    project = slugify(args.project) if args.project else slugify(args.prompt[:40])
+    base_dir = os.path.join(APP_DIR, "projects", project)
+    paths = ch.chain_paths(base_dir)
+
+    source = os.path.abspath(args.image)
+    if not os.path.isfile(source):
+        print(f"Error: --image not found: {args.image}", file=sys.stderr)
+        return 1
+    if not st.valid_image_file(source):
+        print(f"Error: --image is not a readable image: {args.image}",
+              file=sys.stderr)
+        return 1
+    try:
+        target_w, target_h = resolve_dimensions(args.aspect, args.resolution)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        vid_entry = lookup(APP_DIR, "video", args.video_model)
+    except UnknownModelError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    base_seed = args.seed if args.seed is not None else random.randint(0, 2**31 - 1)
+
+    print(f"Video model: {args.video_model}")
+    print(f"Chain planner: {model} (text-only)")
+    print(f"Source image: {source}")
+    print(f"Target: {target_w}x{target_h}")
+
+    # Storyboard authority: an existing continuous_storyboard.json is the
+    # source of truth and is reused verbatim (planner never runs, the CLI
+    # prompt is ignored for planning). The CLI prompt is only a storyboard
+    # CREATION input used when no board exists yet. This lets users hand-edit
+    # the board and re-run any command to generate from it.
+    if os.path.isfile(paths["board"]):
+        try:
+            board = ch.load_board(paths["board"])
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        board_reused = True
+        print(f"[Continuous] Existing storyboard found:\n{paths['board']}")
+        print("[Continuous] Reusing existing storyboard.")
+        print("[Continuous] Skipping planner.")
+        print("[Continuous] CLI prompt ignored for storyboard planning.")
+        print(f"Loaded continuous storyboard "
+              f"({len(board['clips'])} clips) -> {paths['board']}")
+        try:
+            board = ch.select_clips(board, args.clips)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            ol.check_model_available(ollama_url, model)
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        try:
+            board = ch.plan_chain(
+                args.prompt, model=model, base_url=ollama_url,
+                num_clips=args.clips, total_duration=args.duration,
+                timeout=int(ollama_cfg.get("timeout", 600)))
+        except (RuntimeError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        board["source_image"] = source
+        board["planner_model"] = model
+        try:
+            ch.save_board(board, paths["board"])
+        except OSError as exc:
+            print(f"Error: cannot save storyboard: {exc}", file=sys.stderr)
+            return 1
+        print(f"Saved continuous storyboard ({len(board['clips'])} clips) "
+              f"-> {paths['board']}")
+
+    if normalize_stop_after(args.stop_after) == "storyboard":
+        print("Stopped after storyboard as requested (--stop-after storyboard).")
+        return 0
+
+    # Master identity (immutable for the whole chain) + backends/ffmpeg.
+    try:
+        identity = ch.ensure_identity(
+            paths["out_dir"], args.prompt, board, model=model,
+            base_url=ollama_url, timeout=int(ollama_cfg.get("timeout", 600)),
+            identity_file=getattr(args, "identity_file", None),
+            base_dir=base_dir)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    # Backends + ffmpeg.
+    try:
+        client = ComfyClient(
+            comfy_url,
+            timeout=int(comfy_cfg.get("timeout", 60)),
+            poll_interval=float(comfy_cfg.get("poll_interval", 2.0)),
+            queue_timeout=int(comfy_cfg.get("queue_timeout", 5400)))
+        client.check_reachable()
+        video_provider = create_provider("video", APP_DIR, args.video_model,
+                                         client=client)
+        ffmpeg_exe = ff.check_ffmpeg(ff_cfg.get("executable", "ffmpeg"))
+    except (RuntimeError, Exception) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    motion_clips = None
+    if getattr(video_provider, "uses_motion_clips", False):
+        if not args.motion_dir:
+            print(f"Error: --video-model {args.video_model} requires "
+                  f"--motion-dir in --continuous mode.", file=sys.stderr)
+            return 1
+        try:
+            motion_clips = video_provider.discover_motion_clips(args.motion_dir)
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Motion dir: {args.motion_dir} ({len(motion_clips)} clips)")
+
+    try:
+        ch.run_chain(
+            out_dir=paths["out_dir"], board=board, source_image=source,
+            provider=video_provider,
+            negative_prompt=vid_entry.get("negative_prompt", ""),
+            width=target_w, height=target_h, seed=base_seed,
+            ffmpeg_exe=ffmpeg_exe, only_clip=args.scene,
+            motion_clips=motion_clips, identity=identity)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Interrupted. Re-run the same command to resume the chain.",
+              file=sys.stderr)
+        return 130
+    if args.scene is not None:
+        print(f"Clip {args.scene} regenerated. downstream clips start from "
+              f"its last frame and may require regeneration; final.mp4 was "
+              f"not rebuilt (run without --scene to rebuild it).")
+        return 0
+    try:
+        ch.concat_chain(paths["out_dir"], board["clips"], ffmpeg_exe)
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv=None) -> int:
@@ -821,6 +1076,8 @@ def main(argv=None) -> int:
         print(f"Error: {combo_error}", file=sys.stderr)
         return 1
     cfg = load_config(args.config)
+    if bool(getattr(args, "continuous", False)):
+        return run_continuous_command(args, cfg)
 
     ollama_cfg = cfg.get("ollama", {})
     comfy_cfg = cfg.get("comfyui", {})

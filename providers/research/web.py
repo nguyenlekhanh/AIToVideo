@@ -219,9 +219,12 @@ class WebResearchProvider(ResearchProvider):
         if not (topic or "").strip():
             raise ResearchError("Cannot research an empty topic.")
         topic = topic.strip()
+        intent = _pipe.detect_news_intent(topic)
+        print(f"[Research] intent={intent}")
         collected: list[ResearchSource] = []
         seen_urls: set[str] = set()
         diagnostics: list[str] = []
+        pass_summaries: list[str] = []
 
         def add(new: list[ResearchSource]) -> None:
             for src in new:
@@ -259,5 +262,42 @@ class WebResearchProvider(ResearchProvider):
                 f"Diagnostics: {'; '.join(diagnostics)}")
         pack = _pipe.build_pack(topic, collected, max_facts=self.max_facts,
                                 relevance_threshold=self.relevance_threshold)
+        pass_summaries.append(f"pass 1: {len(pack.sources)} source(s), "
+                              f"{pack.research_quality}")
+        print(f"[Research] pass=1 sources={len(pack.sources)} "
+              f"quality={pack.research_quality}")
+        if intent == _pipe.NEWS_INTENT_CURRENT \
+                and not _pipe.current_evidence_sufficient(pack):
+            # Gate: a background-only pack must NEVER reach the storyboard
+            # planner for a current-news topic. Retry with short targeted
+            # queries (dated fetchers only) before giving up.
+            print("[Research] current-news freshness insufficient for "
+                  "current claims; targeted retry ...")
+            retry_queries = _pipe.targeted_queries(topic)
+            print("[Research] pass=2 targeted queries="
+                  + " | ".join(retry_queries))
+            for qi, query in enumerate(retry_queries, start=1):
+                attempt(f"arxiv[r{qi}]", self._arxiv, query)
+                attempt(f"hn[r{qi}]", self._hn, query)
+            pack = _pipe.build_pack(
+                topic, collected, max_facts=self.max_facts,
+                relevance_threshold=self.relevance_threshold,
+                relevance_queries=retry_queries)
+            pass_summaries.append(f"pass 2: {len(pack.sources)} source(s), "
+                                  f"{pack.research_quality}")
+            print(f"[Research] pass=2 sources={len(pack.sources)} "
+                  f"quality={pack.research_quality}")
+            if not _pipe.current_evidence_sufficient(pack):
+                raise ResearchError(
+                    "Research error: current-news topic requires recent "
+                    "dated evidence, but the research stage could not obtain "
+                    "sufficient current sources after retry.\n"
+                    f"Research summary: {'; '.join(pass_summaries)}; "
+                    "current evidence: insufficient (need 2+ recent dated "
+                    "facts from 2+ distinct sources).\n"
+                    "Suggested actions: retry later, provide a specific "
+                    "source, or change the topic to an evergreen explainer.\n"
+                    f"Diagnostics: {'; '.join(diagnostics)}")
         pack.diagnostics = diagnostics
+        print(f"[Research] final quality={pack.research_quality}")
         return ResearchPackResult(query=pack.query, sources=pack.sources, pack=pack)

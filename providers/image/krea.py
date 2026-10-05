@@ -151,6 +151,46 @@ class KreaImageProvider(ImageProvider):
                 "resolution": selectors[0]}
 
     @staticmethod
+    def _disable_prompt_enhance(workflow: dict) -> str:
+        """Bypass the Qwen prompt-enhancer LLM in the in-memory copy.
+
+        Finds the ComfySwitchNode whose on_true branch is the TextGenerate
+        output and flips its PrimitiveBoolean selector to false, so the raw
+        user prompt (not an LLM rewrite) reaches the conditioning path.
+        The template file on disk is never touched. Returns the switch
+        node id. Fails loud on graph drift instead of mis-generating.
+        """
+        by_class: dict[str, list[str]] = {}
+        for nid, node in workflow.items():
+            by_class.setdefault(node.get("class_type", ""), []).append(nid)
+        enhancers = by_class.get("TextGenerate", [])
+        if len(enhancers) != 1:
+            raise ProviderError("krea",
+                                f"Expected 1 TextGenerate node, found {enhancers}.")
+        enhancer = enhancers[0]
+        for nid in by_class.get("ComfySwitchNode", []):
+            inputs = workflow[nid].get("inputs", {})
+            on_true = inputs.get("on_true")
+            if isinstance(on_true, list) and len(on_true) == 2 \
+                    and str(on_true[0]) == enhancer:
+                sw_src = inputs.get("switch")
+                if not isinstance(sw_src, list) or len(sw_src) != 2:
+                    raise ProviderError(
+                        "krea", "Enhancer switch has no switch input.")
+                bool_node = workflow.get(str(sw_src[0]))
+                if bool_node is None or bool_node.get("class_type") != "PrimitiveBoolean":
+                    raise ProviderError(
+                        "krea", "Enhancer switch is not driven by a "
+                                "PrimitiveBoolean; refusing to guess.")
+                bool_node["inputs"]["value"] = False
+                if workflow[str(sw_src[0])]["inputs"]["value"] is not False:
+                    raise ProviderError("krea", "Enhancer switch did not stay off.")
+                return nid
+        raise ProviderError(
+            "krea", "No ComfySwitchNode routes TextGenerate output; "
+                    "cannot verify enhancer bypass.")
+
+    @staticmethod
     def _find_ref_nodes(workflow: dict) -> dict:
         """Locate prompt / seed / reference-input nodes in the character
         (img2img) graph. Same prompt-chain lookup as T2I; dims come from the
@@ -205,6 +245,7 @@ class KreaImageProvider(ImageProvider):
         wf[found["sampler"]]["inputs"]["seed"] = seed
         wf[found["resolution"]]["inputs"] = {
             "aspect_ratio": aspect_label, "megapixels": megapixels, "multiple": 8}
+        self._disable_prompt_enhance(wf)
         return wf
 
     def customize_ref(self, template: dict, *, prompt: str, seed: int,
@@ -216,6 +257,7 @@ class KreaImageProvider(ImageProvider):
         wf[found["sampler"]]["inputs"]["seed"] = seed
         wf[found["sampler"]]["inputs"]["denoise"] = denoise
         wf[found["image"]]["inputs"]["image"] = image_name
+        self._disable_prompt_enhance(wf)
         return wf
 
     @staticmethod
@@ -264,6 +306,9 @@ class KreaImageProvider(ImageProvider):
             template = self.load_workflow()
             wf = self.customize(template, prompt=request.prompt, seed=seed,
                                 aspect_label=aspect_label, megapixels=megapixels)
+            print(f"  Krea final prompt: {request.prompt}")
+            print(f"  Krea prompt enhancer: bypassed "
+                  f"(enhance switch=false in runtime copy)")
             dest = self.client.run(wf, ("images",), str(request.output_path))
         except ComfyError as exc:
             raise ProviderError(self.provider_id, "Image generation failed.",
@@ -295,6 +340,9 @@ class KreaImageProvider(ImageProvider):
             stored = self.client.upload_image(ref)
             wf = self.customize_ref(template, prompt=request.prompt, seed=seed,
                                     image_name=stored, denoise=self.denoise)
+            print(f"  Krea final prompt: {request.prompt}")
+            print(f"  Krea prompt enhancer: bypassed "
+                  f"(enhance switch=false in runtime copy)")
             dest = self.client.run(wf, ("images",), str(request.output_path))
         except ComfyError as exc:
             raise ProviderError(self.provider_id, "Character image generation failed.",

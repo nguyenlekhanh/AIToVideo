@@ -38,6 +38,39 @@ def probe_duration(path: str, ffprobe_exe: str = "ffprobe") -> float:
         return 0.0
 
 
+def count_frames(path: str, ffprobe_exe: str = "ffprobe") -> int:
+    """Number of frames in the first video stream, or 0 when unreadable."""
+    exe = shutil.which(ffprobe_exe) or ffprobe_exe
+    try:
+        out = subprocess.run(
+            [exe, "-v", "error", "-count_frames", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0",
+             path],
+            check=True, capture_output=True, text=True).stdout
+        return max(0, int(out.strip().split()[0]))
+    except Exception:
+        return 0
+
+
+def extract_last_frame(video_path: str, out_path: str,
+                       executable: str = "ffmpeg") -> str:
+    """Extract the ACTUAL final frame of a clip (deterministic PNG).
+
+    Counts frames with ffprobe, then selects frame N-1 exactly. Falls back
+    to `-sseof` only when the count is unavailable. Used for chained
+    generation where clip N+1 must start from clip N's true ending.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    total = count_frames(video_path)
+    if total > 0:
+        run([executable, "-y", "-i", video_path, "-vf",
+             f"select='eq(n\\,{total - 1})'", "-vframes", "1", out_path])
+    else:
+        run([executable, "-y", "-sseof", "-0.1", "-i", video_path,
+             "-vframes", "1", out_path])
+    return out_path
+
+
 def probe_streams(path: str, ffprobe_exe: str = "ffprobe") -> list[str]:
     """Codec types present in the file (e.g. ["video", "audio"]).
 

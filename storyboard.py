@@ -232,6 +232,95 @@ def validate_semantics(scenes: list[dict], research: dict | None,
     return errors, warnings
 
 
+# -- visual-generation gate (deterministic, no model calls) --
+#
+# Flags image/video prompts that request rendered text, statistics, or
+# multi-panel compositions. Research facts belong in narration/metadata,
+# never as visible pixels. "no ..." negation clauses are stripped first
+# so mandated constraints ("no split screen, no readable text, ...")
+# never trip the detector.
+
+_NEGATION_CLAUSE = re.compile(r"\bno\s+[a-z][^.,;]*", re.IGNORECASE)
+
+# (pattern, human-readable reason). Checked against image_prompt and
+# video_prompt only -- narration is never inspected here.
+VISUAL_TEXT_PATTERNS = (
+    (re.compile(r"\"[^\"]{2,}\"|'[^']{3,}'"),
+     "quoted text"),
+    (re.compile(r"\breadable text\b", re.IGNORECASE),
+     "readable text"),
+    (re.compile(r"\bheadlines?\b|\bcaptions?\b|\bsubtitles?\b|\blogos?\b",
+                re.IGNORECASE),
+     "headline/caption/subtitle/logo"),
+    (re.compile(r"\binfograph\w*\b", re.IGNORECASE),
+     "infographic"),
+    (re.compile(r"\bcollage\b|\bsplit.?screen\b|\bside.by.side\b|"
+                r"\btwo panels?\b|\bmultiple panels?\b|\bbefore and after\b|"
+                r"\bbefore/after\b|\bon one side\b|\bon the other side\b|"
+                r"\bmontage\b",
+                re.IGNORECASE),
+     "multi-panel composition"),
+    (re.compile(r"\bcharts?\b|\bgraphs?\b|\bholograms?\b|\bfloating\b|"
+                r"\bstatistics?\b",
+                re.IGNORECASE),
+     "charts/statistics overlay"),
+    (re.compile(r"\d{1,3}(,\d{3})+|\b\d+(\.\d+)?\s*%",
+                re.IGNORECASE),
+     "rendered numbers"),
+    (re.compile(r"\b(sign|notice)\b.{0,40}\b(says?|reads?|showing|"
+                r"displaying)\b|\b(shows?|displays?|reads?)\s+['\"]",
+                re.IGNORECASE),
+     "sign/screen showing text"),
+    (re.compile(r"\b(screen|monitor|display|newspaper|billboard|document|"
+                r"\btv\b|phone|paper|laptop|computer|website|webpage)\s+"
+                r"(showing|displaying|with|reads?|says?|containing)\b",
+                re.IGNORECASE),
+     "prop displaying content"),
+    (re.compile(r"\bmonitors?\b|\bscreens?\b|\bcomputers?\b|"
+                r"\bnewspapers?\b|\bdocuments?\b|\bcharts?\b|\bgraphs?\b|"
+                r"\bmagazines?\b|\bsigns?\b|\bbillboards?\b|\btvs?\b",
+                re.IGNORECASE),
+     "information-display object"),
+)
+
+
+def _prompt_word_count(text: str) -> int:
+    return len(text.split())
+
+
+def validate_visual_prompts(scenes: list[dict]) -> list[str]:
+    """Flag prompts that would render text/numbers or multi-panel layouts.
+
+    Returns a list of error strings (empty = clean). Pure function over
+    already-validated scene dicts; narration and grounding metadata are
+    never touched.
+    """
+    errors: list[str] = []
+    for i, scene in enumerate(scenes, start=1):
+        for field in ("image_prompt", "video_prompt"):
+            text = scene.get(field, "")
+            if not isinstance(text, str):
+                continue
+            if _prompt_word_count(text) > 120:
+                errors.append(
+                    f"Scene #{i} {field} is overloaded "
+                    f"({_prompt_word_count(text)} words; target 40-80). "
+                    f"Describe only who, where, doing what, emotion, light, "
+                    f"camera, style.")
+                continue
+            cleaned = _NEGATION_CLAUSE.sub("", text)
+            for pattern, reason in VISUAL_TEXT_PATTERNS:
+                match = pattern.search(cleaned)
+                if match:
+                    errors.append(
+                        f"Scene #{i} {field} requests {reason} "
+                        f"({match.group(0).strip()[:60]!r}). Research "
+                        f"facts must remain in narration/metadata, not "
+                        f"inside the generated image.")
+                    break
+    return errors
+
+
 def save_storyboard(scenes: list[dict], path: str, subject=None,
                       research: dict | None = None) -> None:
     """Save scenes plus optional SubjectProfile and research metadata.

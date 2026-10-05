@@ -29,6 +29,75 @@ RECENT_DAYS = 365
 DEDUP_JACCARD = 0.55
 CONFLICT_SHARED_TOKENS = 3
 
+# Research intent: does the topic need current/dated evidence, or is
+# background knowledge enough? A current-news topic without recent dated
+# facts must never reach the storyboard planner (see quality gate).
+NEWS_INTENT_CURRENT = "current_news"
+NEWS_INTENT_BACKGROUND = "background"
+
+# Domain signals for current-news intent (jobs, markets, policy, civic
+# life...). Matched case-insensitively against the raw topic.
+NEWS_DOMAIN_PATTERNS = (
+    re.compile(r"\bjobs?\b|\bunemployment\b|\bemployment\b|\bhiring\b|"
+               r"\blabou?r market\b|\blayoffs?\b|\bpayrolls?\b|\bjob market\b",
+               re.IGNORECASE),
+    re.compile(r"\binflation\b|\bcpi\b|\bconsumer prices?\b|\bgas prices?\b",
+               re.IGNORECASE),
+    re.compile(r"\bstock market\b|\bstocks?\b|\bdow\b|\bnasdaq\b|\bs&p\b|"
+               r"\bwall street\b", re.IGNORECASE),
+    re.compile(r"\bfederal reserve\b|\bfomc\b|\binterest rates?\b|"
+               r"\brate (cut|hike|decision)\b|\bpowell\b|(?<![\w-])fed(?![\w-])",
+               re.IGNORECASE),
+    re.compile(r"\bsupreme court\b|\bscotus\b", re.IGNORECASE),
+    re.compile(r"\bcongress\b|\bsenate\b|\bhouse of representatives\b|"
+               r"\belection\b|\bballot\b|\bvoters?\b|\bcampaign\b|"
+               r"\bmidterms?\b|\bprimary\b|\bwhite house\b|\bpresident\b|"
+               r"\badministration\b|\bpolicy\b", re.IGNORECASE),
+    re.compile(r"\bbreaking\b|\bjust announced\b|\bthis week\b|"
+               r"\byesterday\b|\brecent events?\b", re.IGNORECASE),
+)
+
+# Evergreen question shapes: educational, not news-seeking. Checked AFTER
+# explicit freshness markers (so "latest Fed decision explained" still
+# counts as news) but BEFORE domain signals (so "How does unemployment
+# insurance work?" stays background despite the jobs keyword).
+EVERGREEN_PATTERNS = (
+    re.compile(r"^\s*how\s+(do|does|is|are|can|should|would)\b",
+               re.IGNORECASE),
+    re.compile(r"\bwhat\s+(is|are)\b|\bexplain(ing|er)?\b|\bhistory\s+of\b|"
+               r"\bbasics?\b|\b101\b|\btutorial\b|\bguide\s+to\b",
+               re.IGNORECASE),
+)
+
+# Domain -> short targeted queries for the retry pass. Year is filled in
+# dynamically (never hardcoded). Generic base-topic variants are appended
+# after these by targeted_queries().
+NEWS_QUERY_TEMPLATES = (
+    (r"\bjobs?\b|\bunemployment\b|\bemployment\b|\bhiring\b|"
+     r"\blabou?r market\b|\blayoffs?\b|\bpayrolls?\b|\bjob market\b",
+     ("U.S. jobs report {year}", "U.S. unemployment rate {year}",
+      "U.S. hiring trends {year}")),
+    (r"\binflation\b|\bcpi\b|\bconsumer prices?\b|\bgas prices?\b",
+     ("U.S. inflation rate {year}", "U.S. CPI report {year}")),
+    (r"\bstock market\b|\bstocks?\b|\bdow\b|\bnasdaq\b|\bs&p\b|"
+     r"\bwall street\b",
+     ("U.S. stock market {year}", "S&P 500 {year}")),
+    (r"\bfederal reserve\b|\bfomc\b|\binterest rates?\b|"
+     r"\brate (cut|hike|decision)\b|\bpowell\b|(?<![\w-])fed(?![\w-])",
+     ("Federal Reserve interest rate decision {year}",
+      "Fed rate outlook {year}")),
+    (r"\bsupreme court\b|\bscotus\b",
+     ("Supreme Court ruling {year}", "Supreme Court decision {year}")),
+    (r"\bcongress\b|\bsenate\b|\bhouse of representatives\b",
+     ("Congress vote {year}", "Senate bill {year}")),
+    (r"\belection\b|\bballot\b|\bvoters?\b|\bcampaign\b|\bmidterms?\b|"
+     r"\bprimary\b",
+     ("U.S. election {year}", "election results {year}")),
+)
+
+# Hard cap on retry queries: bounds network time on huge topics.
+MAX_RETRY_QUERIES = 6
+
 FRESHNESS_MARKERS = re.compile(
     r"\b(latest|recent|recently|new|newest|newly announced|breakthrough|"
     r"breakthroughs|announced|announces|launched|launches|recently launched|"
@@ -91,6 +160,64 @@ def jaccard(a: set[str], b: set[str]) -> float:
 def wants_fresh(topic: str) -> bool:
     """True when the topic asks for latest/current information."""
     return FRESHNESS_MARKERS.search(topic or "") is not None
+
+
+def detect_news_intent(topic: str) -> str:
+    """Classify a topic as current-news or background.
+
+    Explicit freshness markers always mean news. Evergreen question
+    shapes ("How does unemployment insurance work?") stay background
+    even when they mention a news domain. Otherwise, news-domain
+    keywords (jobs, inflation, Fed, elections, ...) mean news -- the
+    literal word "latest" is NOT required.
+    """
+    text = topic or ""
+    if wants_fresh(text):
+        return NEWS_INTENT_CURRENT
+    if any(pattern.search(text) for pattern in EVERGREEN_PATTERNS):
+        return NEWS_INTENT_BACKGROUND
+    if any(pattern.search(text) for pattern in NEWS_DOMAIN_PATTERNS):
+        return NEWS_INTENT_CURRENT
+    return NEWS_INTENT_BACKGROUND
+
+
+def targeted_queries(topic: str, max_queries: int = MAX_RETRY_QUERIES) -> list[str]:
+    """Short targeted queries for the retry pass on current-news topics.
+
+    Domain templates first (highest value), then generic base-topic
+    variants. The year is always the actual current year.
+    """
+    original = (topic or "").strip()
+    if not original:
+        return []
+    year = str(_dt.date.today().year)
+    out: list[str] = []
+    for pattern, templates in NEWS_QUERY_TEMPLATES:
+        if re.search(pattern, original, re.IGNORECASE):
+            for template in templates:
+                query = template.format(year=year)
+                if query not in out:
+                    out.append(query)
+                if len(out) >= max_queries:
+                    return out
+    base = strip_temporal_markers(original) or original
+    for variant in (f"{base} {year}", f"latest {base}", f"{base} recent"):
+        variant = re.sub(r"\s+", " ", variant).strip()
+        if variant and variant not in out:
+            out.append(variant)
+        if len(out) >= max_queries:
+            break
+    return out
+
+
+def current_evidence_sufficient(pack) -> bool:
+    """Pre-planner gate for current-news topics.
+
+    Only a HIGH pack passes: 2+ recent dated facts from 2+ distinct
+    sources. A single recent source is never enough ("1 source =
+    current" is banned); background_only/insufficient never pass.
+    """
+    return pack.research_quality == QUALITY_HIGH
 
 
 def strip_temporal_markers(topic: str) -> str:
@@ -182,8 +309,20 @@ def sort_sources_by_score(sources: list[ResearchSource],
                   reverse=True)
 
 
+def _max_relevance(queries: list[str], title: str, snippet: str) -> float:
+    """Best relevance of a source across several queries.
+
+    Retry-pass sources were fetched with targeted queries; judging them
+    only against the original long topic would discard good hits, so the
+    maximum overlap wins. Single-query callers are unaffected.
+    """
+    return max([relevance_score(query, title, snippet) for query in queries
+                if (query or "").strip()] or [0.0])
+
+
 def normalize_sources(query: str, sources: list[ResearchSource],
                       retrieved_at: str, relevance_threshold: float = 0.15,
+                      relevance_queries: list[str] | None = None,
                       ) -> list[ResearchSource]:
     """Assign ids/timestamps, drop retrieval noise, rank by source score.
 
@@ -192,8 +331,9 @@ def normalize_sources(query: str, sources: list[ResearchSource],
     come first and ids stay dense within the run.
     """
     kept: list[ResearchSource] = []
+    queries = [query] + list(relevance_queries or [])
     for src in sources:
-        score = relevance_score(query, src.title, src.snippet)
+        score = _max_relevance(queries, src.title, src.snippet)
         if score < relevance_threshold:
             continue
         src.retrieved_at = retrieved_at
@@ -214,9 +354,14 @@ def split_claims(text: str, min_words: int = 6) -> list[str]:
 
 
 def extract_facts(sources: list[ResearchSource], query: str,
-                  max_facts: int = 8, per_source: int = 2) -> list[ResearchFact]:
+                  max_facts: int = 8, per_source: int = 2,
+                  relevance_queries: list[str] | None = None,
+                  ) -> list[ResearchFact]:
     """Extract top sentences per source as fact claims with source support."""
+    queries = [query] + list(relevance_queries or [])
     qtokens = content_tokens(query)
+    for extra in queries[1:]:
+        qtokens |= content_tokens(extra)
     facts: list[ResearchFact] = []
     n = 0
     for src in sources:
@@ -302,11 +447,15 @@ def assess_quality(facts: list[ResearchFact], topic: str) -> str:
 
 def build_pack(query: str, sources: list[ResearchSource],
                max_facts: int = 8, relevance_threshold: float = 0.15,
-               retrieved_at: str = "") -> ResearchPack:
+               retrieved_at: str = "",
+               relevance_queries: list[str] | None = None) -> ResearchPack:
     """Full deterministic pipeline from collected sources to ResearchPack."""
     retrieved_at = retrieved_at or utcnow_iso()
-    kept = normalize_sources(query, sources, retrieved_at, relevance_threshold)
-    facts = dedupe_facts(extract_facts(kept, query, max_facts))
+    kept = normalize_sources(query, sources, retrieved_at,
+                             relevance_threshold,
+                             relevance_queries=relevance_queries)
+    facts = dedupe_facts(extract_facts(kept, query, max_facts,
+                                       relevance_queries=relevance_queries))
     conflicts = detect_conflicts(facts)
     quality = assess_quality(facts, query)
     return ResearchPack(query=query.strip(), research_quality=quality,

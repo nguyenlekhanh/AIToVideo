@@ -18,6 +18,9 @@ Rules:
 - video_prompt: short image-to-video motion description (camera move, subject motion).
 - narration: one or two sentences of voiceover, plain text, no stage directions.
 - subject: the single recurring visual subject (a person, astronaut, child, animal, robot, object, ...) described in generic identity terms so it stays recognizable across scenes: physical appearance, distinctive features/marks, clothing/equipment/colors. Omit fields that do not apply; use {} if there is no single recurring subject.
+- image_prompt: describe ONLY what a physical camera can see. ONE person (or TWO people interacting), ONE location, ONE simple action, subtle emotion, natural lighting, simple camera composition. Show HUMAN BEHAVIOR (entering workplaces, working, commuting, waiting, talking, carrying bags, sitting quietly), never information: no screens, monitors, computers, phones displaying anything, newspapers, documents being read, signs, charts, graphs, headlines, statistics, numbers, logos, or any object whose purpose is to display information. A laptop bag or a closed laptop is fine; an open screen never is. Research facts belong in narration/metadata ONLY. Target 40-80 words with this structure: SUBJECT + LOCATION + SIMPLE HUMAN ACTION + SUBTLE EMOTION + NATURAL LIGHTING + CAMERA COMPOSITION + PHOTOREALISTIC STYLE. Photorealistic premium documentary photography, realistic contemporary America, natural daylight, authentic environments, subtle emotion, clean cinematic composition. No stock-photo poses, editorial illustration, infographics, or graphic design.
+- video_prompt: animate the SAME single scene with simple physical motion (the person moves, the camera pushes or drifts, natural background movement). Never introduce new locations, objects, text, transitions, or montages.
+- Build image prompts from this template only: SUBJECT + LOCATION + SIMPLE HUMAN ACTION + SUBTLE EMOTION + NATURAL LIGHTING + CAMERA COMPOSITION + PHOTOREALISTIC STYLE. Do not append lists of negative concepts and do not mention text, statistics, or research facts inside the image description.
 - When a "Web research context" message is provided, it contains numbered facts ([fact_001]...), disagreements ([conflict_001]...) and sources ([src_001]...): use researched facts for factual claims, do not invent facts, citations, URLs or dates, and reference facts/sources ONLY by their given IDs. Every scene whose narration makes factual claims must include research_fact_ids (and source_ids); phrase narrations as close paraphrases of the cited facts so each claim stays traceable; prefer recent facts when the topic asks for latest/current information; do not use irrelevant research just because it exists; never turn search noise into facts. Scenes with no factual claims use "grounding": "creative". Creative visual details are allowed only when they do not contradict the research. If facts disagree (a conflict entry), do not present the disputed detail as unquestioned fact.
 - Exactly the requested number of scenes."""
 
@@ -106,6 +109,75 @@ def rewrite_scene_narration(scene: dict, facts: list[dict], reason: str,
     return updated
 
 
+def rewrite_scene_visuals(scene: dict, reason: str,
+                          model: str, base_url: str = "http://127.0.0.1:11434",
+                          timeout: int = 180) -> dict:
+    """Rewrite ONLY a scene's image_prompt/video_prompt for clean generation.
+
+    Fixes requested readable text/numbers, split-screen/collage/infographic
+    composition, and multi-concept packing while keeping the same single
+    scene meaning. Narration, ids, durations, research_fact_ids,
+    source_ids and grounding are preserved byte-for-byte, so research
+    grounding is never weakened. Raises RuntimeError on failure.
+    """
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content":
+             "You rewrite one storyboard scene's visual prompts for clean "
+             "AI image/video generation. Output ONLY valid JSON: "
+             "{\"image_prompt\": \"...\", \"video_prompt\": \"...\"}. "
+             "No markdown, no commentary."},
+            {"role": "user", "content":
+             f"Scene #{scene.get('id')} current image_prompt:\n"
+             f"{scene.get('image_prompt', '')}\n\n"
+             f"Scene #{scene.get('id')} current video_prompt:\n"
+             f"{scene.get('video_prompt', '')}\n\n"
+             f"Scene meaning to preserve: {scene.get('narration', '')}\n\n"
+             f"Problem with the current visuals: {reason}\n\n"
+             "Rewrite both prompts to describe ONLY what a physical camera "
+             "can see: one person (or two interacting), one location, one "
+             "simple human action, subtle emotion, natural lighting, simple "
+             "camera composition. REMOVE every information-display object "
+             "entirely (screens, monitors, computers, phones showing "
+             "anything, newspapers, documents, signs, charts, statistics, "
+             "headlines, numbers, logos) instead of blurring it; a laptop "
+             "bag or closed laptop is fine, an open screen never is. Show "
+             "human behavior, not information. Keep each prompt 40-80 "
+             "words: subject, location, action, emotion, lighting, camera, "
+             "photorealistic documentary style. Do not append lists of "
+             "negative concepts. Keep the same subject and scene meaning. "
+             "Return ONLY the JSON object."},
+        ],
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.5},
+    }
+    try:
+        result = _post(f"{base_url.rstrip('/')}/api/chat", payload, timeout)
+    except Exception as exc:
+        raise RuntimeError(f"Ollama visual rewrite failed (model={model}): {exc}") from exc
+    content = (result.get("message") or {}).get("content", "")
+    try:
+        parsed = _extract_json(content)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Ollama visual rewrite returned invalid JSON: {exc}\nRaw: {content[:500]}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"Ollama visual rewrite returned non-object. Raw: {content[:500]}")
+    image_prompt = (parsed.get("image_prompt") or "").strip()
+    video_prompt = (parsed.get("video_prompt") or "").strip()
+    if not image_prompt or not video_prompt:
+        raise RuntimeError(
+            f"Ollama visual rewrite returned empty prompts. Raw: {content[:500]}")
+    updated = dict(scene)
+    updated["image_prompt"] = image_prompt
+    updated["video_prompt"] = video_prompt
+    return updated
+
+
 def generate_storyboard(
     user_prompt: str,
     model: str,
@@ -182,8 +254,8 @@ Schema:
 {"image_prompt": "...", "video_prompt": "...", "subject": {"type": "...", "identity": "...", "features": "...", "clothing_or_equipment": "...", "consistency": "..."}}
 
 Rules:
-- image_prompt: pure visual prose describing the frame to recreate (main subject, environment, composition, camera angle and distance, lighting, weather/time of day, colors, important foreground/background objects, visual style). No schema labels, no JSON keys, no scene IDs, no instructions.
-- video_prompt: plausible motion based ONLY on elements visible in the image (camera movement plus natural movement of water, vegetation, clouds, people, animals, vehicles, etc.). Do not invent actions that contradict the image.
+- image_prompt: pure visual prose describing only what a camera can physically see (main subject, environment, simple action, lighting, camera). No schema labels, no JSON keys, no scene IDs, no instructions. Never include screens, monitors, newspapers, documents, signs, charts, or any information-display object, even blurred.
+- video_prompt: plausible motion based ONLY on elements visible in the image (camera movement plus natural movement of water, vegetation, clouds, people, animals, vehicles, etc.). Do not invent actions that contradict the image. Animate the same single scene; never introduce new locations, panels, or text overlays.
 - subject: describe a recurring subject ONLY when the image clearly shows one that must stay consistent (a specific person, animal, product, ...). For visual-only content (landscapes, waterfalls, rivers, flowers, ocean, architecture, food, cars, animals, objects, scenery) use {"type": "none", "identity": "", "features": "", "clothing_or_equipment": "", "consistency": ""}. Never force a human subject that is not visible."""
 
 
