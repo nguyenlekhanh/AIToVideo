@@ -72,7 +72,7 @@ class RegistryTest(unittest.TestCase):
 
     def test_list_models(self):
         self.assertEqual(set(list_models(AI_VIDEO_DIR, "image")), {"sd15", "sdxl", "flux", "krea"})
-        self.assertEqual(set(list_models(AI_VIDEO_DIR, "video")), {"ltx", "wan", "wan_animate2"})
+        self.assertEqual(set(list_models(AI_VIDEO_DIR, "video")), {"ltx", "ltx_t2v", "wan", "wan_animate2"})
 
     def test_provider_error_format(self):
         err = ProviderError("ltx", "boom", workflow="ltx2_5_i2v.json", detail="trace...")

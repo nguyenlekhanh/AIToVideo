@@ -165,6 +165,9 @@ def validate_cli_combination(args) -> str | None:
         return "--scene must be a positive 1-based scene number"
     if args.stage is not None and normalize_stop_after(args.stop_after) != "all":
         return "--stage and --stop-after are mutually exclusive"
+    if getattr(args, "video_mode", "i2v") == "t2v" \
+            and getattr(args, "video_model", "ltx") != "ltx":
+        return "--video-mode t2v is only supported by --video-model ltx"
     return None
 
 
@@ -388,7 +391,9 @@ def plan_resume_stages(*, scenes: list[dict], img_dir: str, vid_dir: str,
             return [], problems
         return ["finalize"], []
     # Continue mode: from the first incomplete stage through the end.
-    if all(images_ok(sid) for sid in ids):
+    # Backends that need no input images (t2v, pinned motion reference)
+    # skip the image prerequisite entirely.
+    if (not video_needs_images) or all(images_ok(sid) for sid in ids):
         if all(videos_ok(sid) for sid in ids):
             if all(audios_ok(sid) for sid in ids):
                 if st.valid_final_output(final_path):
@@ -475,6 +480,7 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                   if getattr(provider, "supports_pinned_reference", False)
                   else None)
     skip_duration = bool(getattr(provider, "fixed_duration", False))
+    needs_image = bool(getattr(provider, "needs_input_image", True))
     if motion_clips is not None:
         print(f"  Motion clips: {len(motion_clips)} "
               f"({os.path.basename(os.path.dirname(motion_clips[0]))}/)")
@@ -491,6 +497,8 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
         check_duration = None if skip_duration else expected
         if pinned_ref is not None:
             src = pinned_ref
+        elif not needs_image:
+            src = None
         else:
             src = image_paths.get(sid)
             if src is None or not st.valid_image_file(src):
@@ -519,6 +527,8 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
             print(f"  scene {sid}/{len(scenes)}: video "
                   f"(ref={os.path.basename(str(src))}, "
                   f"motion={os.path.basename(motion)}) ...")
+        elif not needs_image:
+            print(f"  scene {sid}/{len(scenes)}: video (t2v, no input image) ...")
         else:
             print(f"  scene {sid}/{len(scenes)}: video ...")
         try:
@@ -841,6 +851,9 @@ def parse_args(argv=None):
     p.add_argument("--project", default=None, help="Project name (default: derived from prompt)")
     p.add_argument("--image-model", default="sd15", help="Image model from config/models.json")
     p.add_argument("--video-model", default="ltx", help="Video model from config/models.json")
+    p.add_argument("--video-mode", default="i2v", choices=["i2v", "t2v"],
+                   help="Video generation mode: i2v = image-to-video (default), "
+                        "t2v = text-to-video, LTX only, no input image")
     p.add_argument("--audio-model", default="edge_tts", help="Audio provider/model, e.g. edge or piper (see config/models.json)")
     p.add_argument("--aspect", default="16:9", help="Target aspect, e.g. 16:9 or 9:16")
     p.add_argument("--resolution", default=720, help="Target resolution, e.g. 420 or 720")
@@ -1113,10 +1126,15 @@ def main(argv=None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # Text-to-video mode: same LTX family, separate backend with its own
+    # image-free workflow. The registry key selects the backend; user-facing
+    # messages keep the --video-model name.
+    is_t2v = getattr(args, "video_mode", "i2v") == "t2v"
+    video_model_key = "ltx_t2v" if is_t2v else args.video_model
     # Validate requested models against the registry before doing any work.
     try:
         img_entry = lookup(APP_DIR, "image", args.image_model)
-        vid_entry = lookup(APP_DIR, "video", args.video_model)
+        vid_entry = lookup(APP_DIR, "video", video_model_key)
         aud_entry = lookup(APP_DIR, "audio", args.audio_model)
     except UnknownModelError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -1144,6 +1162,8 @@ def main(argv=None) -> int:
 
     print(f"Image model: {args.image_model}")
     print(f"Video model: {args.video_model}")
+    if is_t2v:
+        print("Video mode: t2v (text-to-video, no input image)")
     print(f"Aspect: {args.aspect}")
     print(f"Resolution: {args.resolution}p")
     print(f"ComfyUI: {comfy_url}")
@@ -1183,7 +1203,7 @@ def main(argv=None) -> int:
             aud_dir=aud_dir, final_path=final_path,
             default_duration=default_duration, stage=args.stage,
             only_scene=args.scene,
-            video_needs_images=not (wan_motion and reference_image),
+            video_needs_images=not (wan_motion and reference_image) and not is_t2v,
             check_video_duration=not wan_motion)
         if resume_problems:
             print("Error: " + "\nError: ".join(resume_problems), file=sys.stderr)
@@ -1223,7 +1243,7 @@ def main(argv=None) -> int:
 
     try:
         image_provider = create_provider("image", APP_DIR, args.image_model, client=client)
-        video_provider = create_provider("video", APP_DIR, args.video_model, client=client)
+        video_provider = create_provider("video", APP_DIR, video_model_key, client=client)
         audio_provider = create_provider("audio", APP_DIR, args.audio_model)
     except UnknownModelError as exc:
         print(f"Error: {exc}", file=sys.stderr)

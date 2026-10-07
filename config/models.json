@@ -54,6 +54,11 @@
       "provider": "wan_animate2",
       "workflow": "workflows/video/wan_animate2.json",
       "negative_prompt": ""
+    },
+    "ltx_t2v": {
+      "provider": "ltx_t2v",
+      "workflow": "workflows/video/ltx2_5_t2v.json",
+      "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly"
     }
   },
   "audio": {
