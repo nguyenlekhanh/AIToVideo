@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ffmpeg as ff
 import ollama as ol
+import promptfiles as pf
 import storyboard as sb
 import state as st
 import continuous as ch
@@ -102,8 +103,8 @@ def validate_cli_combination(args) -> str | None:
     Returns an error message, or None when the combination is valid.
     Pure function (no I/O) so unit tests can cover every combination.
     """
-    if args.prompt is None and not args.resume and not getattr(args, "keyframes", None) and not getattr(args, "script", None):
-        return "the prompt is required unless --resume, --keyframes or --script is used"
+    if args.prompt is None and not args.resume and not getattr(args, "keyframes", None) and not getattr(args, "script", None) and not getattr(args, "prompt_dir", None):
+        return "the prompt is required unless --resume, --keyframes, --script or --prompt-dir is used"
     continuous = bool(getattr(args, "continuous", False))
     if not continuous:
         if getattr(args, "image", None) is not None:
@@ -168,6 +169,22 @@ def validate_cli_combination(args) -> str | None:
     if getattr(args, "video_mode", "i2v") == "t2v" \
             and getattr(args, "video_model", "ltx") != "ltx":
         return "--video-mode t2v is only supported by --video-model ltx"
+    prompt_dir = getattr(args, "prompt_dir", None)
+    if prompt_dir:
+        if not getattr(args, "project", None):
+            return "--prompt-dir requires --project"
+        if args.prompt is not None:
+            return "cannot use a prompt with --prompt-dir (prompt files are the source)"
+        if getattr(args, "keyframes", None) or getattr(args, "script", None):
+            return "cannot use --keyframes/--script with --prompt-dir (choose one input mode)"
+        if bool(getattr(args, "continuous", False)):
+            return "cannot use --continuous with --prompt-dir (choose one input mode)"
+        if getattr(args, "scenes", None) is not None:
+            return "cannot use --scenes with --prompt-dir (clip count comes from prompt files)"
+        if args.stage == "image":
+            return "cannot use --stage image with --prompt-dir (prompt files provide video prompts only)"
+        if normalize_stop_after(args.stop_after) in ("storyboard", "image"):
+            return "--stop-after storyboard|image(s) cannot be used with --prompt-dir"
     return None
 
 
@@ -303,6 +320,37 @@ def _interrupt_message(stage: str, scene_id: int, completed: list[int],
     return (f"Generation interrupted during {stage} generation at scene {scene_id}. "
             f"Completed {stage} scenes: {done}. Resume with: "
             f"python ai_video/main.py --project {project} --resume")
+
+
+def prepare_prompt_scenes(prompt_dir_arg: str, base_dir: str,
+                          default_duration: float, project: str) -> list[dict]:
+    """Discover prompt files and build one scene per file (verbatim).
+
+    Relative directories resolve against the project directory, so
+    --prompt-dir prompt with --project news1 reads
+    projects/news1/prompt/. Raises FileNotFoundError/ValueError with
+    clear messages (reported by main, never silent).
+    """
+    prompt_dir = (prompt_dir_arg if os.path.isabs(prompt_dir_arg)
+                  else os.path.join(base_dir, prompt_dir_arg))
+    print(f"[Video Prompts] Project: {project}")
+    print(f"[Video Prompts] Directory: {prompt_dir}")
+    entries, ignored = pf.discover_prompt_files(prompt_dir)
+    for name in ignored:
+        print(f"[Video Prompts] Ignoring non-clip file: {name}")
+    print(f"[Video Prompts] Found {len(entries)} prompt file(s): "
+          + ", ".join(os.path.basename(p) for _, p in entries))
+    manifest = pf.load_manifest(prompt_dir)
+    if manifest is not None:
+        print(f"[Video Prompts] Manifest: {pf.MANIFEST_FILENAME} "
+              f"(per-clip durations: "
+              + ", ".join(f"{n}->{manifest[n]:g}s"
+                          for n in sorted(manifest)) + ")")
+    else:
+        print(f"[Video Prompts] No manifest (Version 1 durations: "
+              f"{default_duration:g}s per clip)")
+    scenes = pf.load_prompt_scenes(prompt_dir, default_duration)
+    return scenes
 
 
 def load_project_scenes(base_dir: str) -> list[dict]:
@@ -528,7 +576,8 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                   f"(ref={os.path.basename(str(src))}, "
                   f"motion={os.path.basename(motion)}) ...")
         elif not needs_image:
-            print(f"  scene {sid}/{len(scenes)}: video (t2v, no input image) ...")
+            extra = f", prompt={scene['prompt_file']}" if scene.get("prompt_file") else ""
+            print(f"  scene {sid}/{len(scenes)}: video (t2v, no input image{extra}) ...")
         else:
             print(f"  scene {sid}/{len(scenes)}: video ...")
         try:
@@ -785,10 +834,47 @@ def run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model, num_scenes,
     return 0
 
 
+def run_prompt_fresh_flow(args, ctx, stages_planned):
+    """Fresh prompt-file run: scenes from prompt/*.txt, no storyboard,
+    research, planner, or Ollama. Shares the video/audio/finalize stages
+    (resume, --scene, validation, finalize discovery all unchanged)."""
+    state, state_path = ctx["state"], ctx["state_path"]
+    fresh = st.new_state(ctx["project"])
+    fresh["base_seed"] = ctx["base_seed"]
+    ctx["state"] = fresh
+    state = fresh
+    scenes = prepare_prompt_scenes(args.prompt_dir, ctx["base_dir"],
+                                   ctx["default_duration"], ctx["project"])
+    state["scene_ids"] = [int(s["id"]) for s in scenes]
+    st.save_state(state_path, state)
+    # Prompt files are video-only: storyboard/image stages never apply.
+    stages_planned = [s for s in stages_planned
+                      if s not in ("storyboard", "image")]
+    ctx["char_ref"] = None
+    ctx["subject"] = None
+    image_paths, clip_paths, audio_paths = {}, {}, {}
+    if "video" in stages_planned:
+        clip_paths = run_video_stage(ctx, scenes, image_paths, force_all=True)
+    if "audio" in stages_planned:
+        audio_paths = run_audio_stage(ctx, scenes, force_all=True)
+        if "finalize" not in stages_planned:
+            print("Stopped after audio as requested (--stop-after audio). "
+                  f"{len(audio_paths)} narration files in {ctx['aud_dir']}.")
+            return 0
+    if "finalize" in stages_planned:
+        run_finalize_stage(ctx, scenes, clip_paths, audio_paths)
+    return 0
+
+
 def run_resume_flow(args, ctx, scenes, stages_planned):
     """Continue an existing project. Never touches research/storyboard/Ollama."""
-    storyboard_path = ctx["storyboard_path"]
-    subject = sb.load_subject(storyboard_path)
+    if ctx.get("prompt_mode"):
+        # Prompt-file mode: scenes already come from prompt/*.txt verbatim;
+        # there is no storyboard.json to load a subject from.
+        subject = None
+    else:
+        storyboard_path = ctx["storyboard_path"]
+        subject = sb.load_subject(storyboard_path)
     ctx["subject"] = subject
     if subject is not None:
         print(f"  Subject profile: {subject.subject_type or 'unspecified type'}")
@@ -906,6 +992,11 @@ def parse_args(argv=None):
     p.add_argument("--motion-dir", default=None,
                    help="Directory of driving motion clips for "
                         "--video-model wan_animate2 (001.mp4, 002.mp4, ...)")
+    p.add_argument("--prompt-dir", default=None,
+                   help="Project-local directory of numbered video prompt "
+                        "files (1.txt, 2.txt, ...); relative paths resolve "
+                        "against projects/<project>/. Each file is one clip's "
+                        "complete video prompt (no storyboard/research).")
     p.add_argument("--continuous", action="store_true",
                    help="Chain mode: one image + one prompt -> Qwen-planned "
                         "continuous clips (last frame chains to next)")
@@ -1182,16 +1273,38 @@ def main(argv=None) -> int:
     final_path = os.path.join(base_dir, "final.mp4")
 
     resume_mode = bool(args.resume)
+    prompt_mode = bool(getattr(args, "prompt_dir", None))
+    if prompt_mode:
+        # Fail fast on a missing/empty prompt directory before touching
+        # ComfyUI, Ollama, or the registry-backed stages.
+        prompt_dir_abs = (args.prompt_dir
+                          if os.path.isabs(args.prompt_dir)
+                          else os.path.join(base_dir, args.prompt_dir))
+        try:
+            pf.discover_prompt_files(prompt_dir_abs)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
     if resume_mode:
-        if not os.path.isdir(base_dir):
+        if prompt_mode:
+            # Prompt-file resume: scenes come from prompt/*.txt verbatim.
+            # No storyboard.json is required, read, or written.
+            try:
+                resume_scenes = prepare_prompt_scenes(
+                    args.prompt_dir, base_dir, default_duration, project)
+            except (OSError, ValueError) as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+        elif not os.path.isdir(base_dir):
             print(f"Error: --resume: project not found: {project}. "
                   f"Generate it first (without --resume).", file=sys.stderr)
             return 1
-        try:
-            resume_scenes = load_project_scenes(base_dir)
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
+        else:
+            try:
+                resume_scenes = load_project_scenes(base_dir)
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
         if args.scene is not None:
             try:
                 scene_ids(resume_scenes, args.scene)
@@ -1203,7 +1316,8 @@ def main(argv=None) -> int:
             aud_dir=aud_dir, final_path=final_path,
             default_duration=default_duration, stage=args.stage,
             only_scene=args.scene,
-            video_needs_images=not (wan_motion and reference_image) and not is_t2v,
+            video_needs_images=not (wan_motion and reference_image) and not is_t2v
+            and vid_entry.get("provider") != "minimax_h3",
             check_video_duration=not wan_motion)
         if resume_problems:
             print("Error: " + "\nError: ".join(resume_problems), file=sys.stderr)
@@ -1225,7 +1339,7 @@ def main(argv=None) -> int:
                               if full_order.index(s) <= full_order.index(stop_after)]
 
     try:
-        if not resume_mode:
+        if not resume_mode and not prompt_mode:
             ol.check_reachable(ollama_url)
         client = ComfyClient(
             comfy_url,
@@ -1293,10 +1407,12 @@ def main(argv=None) -> int:
         "default_duration": default_duration, "char_ref": None,
         "subject": None, "ffmpeg_exe": ffmpeg_exe,
         "reference_image": reference_image, "motion_clips": motion_clips,
-        "motion_dir": args.motion_dir,
+        "motion_dir": args.motion_dir, "prompt_mode": prompt_mode,
     }
 
     try:
+        if prompt_mode and not resume_mode:
+            return run_prompt_fresh_flow(args, ctx, stages_planned)
         if resume_mode:
             return run_resume_flow(args, ctx, resume_scenes, stages_planned)
         return run_fresh_flow(args, ctx, cfg, ollama_url, ollama_model,

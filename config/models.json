@@ -59,6 +59,11 @@
       "provider": "ltx_t2v",
       "workflow": "workflows/video/ltx2_5_t2v.json",
       "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly"
+    },
+    "minimax_h3": {
+      "provider": "minimax_h3",
+      "workflow": "workflows/video/minimax_h3_t2v.json",
+      "negative_prompt": ""
     }
   },
   "audio": {

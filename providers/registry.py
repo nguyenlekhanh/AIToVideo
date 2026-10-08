@@ -22,6 +22,7 @@ IMAGE_PROVIDERS = {
 VIDEO_PROVIDERS = {
     "ltx": ("providers.video.ltx", "LtxVideoProvider"),
     "ltx_t2v": ("providers.video.ltx_t2v", "LtxT2VVideoProvider"),
+    "minimax_h3": ("providers.video.minimax_h3", "MiniMaxH3VideoProvider"),
     "wan": ("providers.video.wan", "WanVideoProvider"),
     "wan_animate2": ("providers.video.wan_animate2", "WanAnimate2Provider"),
 }
