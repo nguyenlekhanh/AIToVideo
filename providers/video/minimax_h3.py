@@ -18,6 +18,13 @@ Runtime node IDs (flat API graph; inner subgraph ids remapped +1000):
   - 115 ResolutionSelector: `aspect_ratio`/`megapixels` injected per scene.
   - 1130 CreateVideo (images + native audio) -> 92 SaveVideo.
 
+  Optional first-frame chaining (--use-first-frame): when a
+  `first_frame` upload name is supplied, a LoadImage node "1"
+  ({"image": <uploaded name>}, the existing ComfyUI upload mechanism)
+  is added in memory and 1131 `first_frame` is linked to ["1", 0]
+  (template inner link 195, subgraph slot 0). `last_frame` is NEVER
+  populated. Without it, the graph is pure T2V as above.
+
 Duration convention (from the template, NOT copied from LTX): the
 duration PrimitiveFloat holds whole seconds; ComfyMathExpression snaps
 to the model's 17k+5 frame lattice at 24 fps
@@ -65,6 +72,12 @@ class MiniMaxH3VideoProvider(VideoProvider):
 
     # Pipeline contract: this backend takes no input image.
     needs_input_image = False
+    # Optional continuity chaining (--use-first-frame): an uploaded PNG
+    # may feed the first_frame input for clips after the first.
+    supports_first_frame = True
+    # In-memory LoadImage id for chaining (free: runtime ids are
+    # 92/115/1119-1139). Never written to the template on disk.
+    FIRST_FRAME_NODE_ID = "1"
 
     def __init__(self, name: str = "minimax_h3",
                  settings: dict | None = None,
@@ -148,7 +161,8 @@ class MiniMaxH3VideoProvider(VideoProvider):
 
     def customize(self, template: dict, *, video_prompt: str, seed: int,
                   duration: float, aspect_label: str,
-                  megapixels: float) -> dict:
+                  megapixels: float,
+                  first_frame: str | None = None) -> dict:
         wf = copy.deepcopy(template)
         found = self._find_nodes(wf)
         wf[found["generate"]]["inputs"]["prompt"] = video_prompt
@@ -156,6 +170,14 @@ class MiniMaxH3VideoProvider(VideoProvider):
         wf[found["duration"]]["inputs"]["value"] = float(duration)
         wf[found["resolution"]]["inputs"] = {
             "aspect_ratio": aspect_label, "megapixels": megapixels, "multiple": 32}
+        if first_frame is not None:
+            # Continuity chaining: uploaded PNG -> LoadImage -> generate
+            # first_frame (template inner link 195). last_frame untouched.
+            wf[self.FIRST_FRAME_NODE_ID] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": first_frame}}
+            wf[found["generate"]]["inputs"]["first_frame"] = [
+                self.FIRST_FRAME_NODE_ID, 0]
         return wf
 
     # -- VideoProvider interface --
@@ -182,7 +204,8 @@ class MiniMaxH3VideoProvider(VideoProvider):
             template = self.load_workflow()
             wf = self.customize(template, video_prompt=request.prompt,
                                 seed=seed, duration=duration,
-                                aspect_label=aspect_label, megapixels=megapixels)
+                                aspect_label=aspect_label, megapixels=megapixels,
+                                first_frame=request.first_frame)
             dest = self.client.run(wf, ("video", "gifs", "images"), str(request.output_path))
         except ComfyError as exc:
             raise ProviderError(self.provider_id, "Video generation failed.",

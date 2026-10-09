@@ -17,6 +17,9 @@ class VideoRequest:
     seed: int | None
     output_path: Path
     motion_video: Path | None = None  # driving clip (wan_animate2 only)
+    # Uploaded ComfyUI filename for MiniMax first-frame chaining
+    # (continuity PNG uploaded via the shared client; MiniMax-only).
+    first_frame: str | None = None
     # Master identity reference for future identity-aware backends.
     # Existing backends (LTX/Wan/Wan Animate2) ignore it; their workflows
     # cannot consume a second image, so nothing is faked into them.

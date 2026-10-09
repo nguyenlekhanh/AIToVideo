@@ -185,6 +185,11 @@ def validate_cli_combination(args) -> str | None:
             return "cannot use --stage image with --prompt-dir (prompt files provide video prompts only)"
         if normalize_stop_after(args.stop_after) in ("storyboard", "image"):
             return "--stop-after storyboard|image(s) cannot be used with --prompt-dir"
+    if bool(getattr(args, "use_first_frame", False)):
+        if not prompt_dir:
+            return "--use-first-frame requires --prompt-dir"
+        if getattr(args, "video_model", "ltx") != "minimax_h3":
+            return "--use-first-frame is only supported by --video-model minimax_h3"
     return None
 
 
@@ -508,6 +513,39 @@ def run_image_stage(ctx: dict, scenes: list[dict], only_scene=None,
     return paths
 
 
+def chain_first_frame_upload(ctx: dict, scenes: list[dict], sid: int) -> str | None:
+    """Resolve the first-frame upload name for clip `sid` (or None).
+
+    First clip in scene order stays pure T2V. Any later clip requires the
+    previous scene's clip to exist and validate; its last frame is
+    extracted (existing ffmpeg utility, project-local continuity dir) and
+    uploaded with the existing ComfyUI client. Clear errors, no silent
+    T2V fallback. The workflow's last-frame input is never involved.
+    """
+    provider = ctx["video_provider"]
+    by_id = {int(s["id"]): s for s in scenes}
+    ordered = sorted(by_id)
+    if sid == ordered[0]:
+        print(f"  First frame: none (first clip)")
+        return None
+    prev = max(i for i in ordered if i < sid)
+    prev_scene = by_id[prev]
+    prev_expected = resolve_scene_duration(prev_scene, ctx["default_duration"])
+    prev_path = scene_path(ctx["vid_dir"], prev, "mp4")
+    if not st.valid_video_file(prev_path, prev_expected):
+        raise ValueError(
+            f"Cannot generate video for scene {sid}: first-frame source "
+            f"scene_{prev:03d}.mp4 missing or invalid. Generate it first.")
+    continuity_dir = os.path.join(ctx["base_dir"], "continuity")
+    frame_path = os.path.join(continuity_dir, f"scene_{prev:03d}_last.png")
+    print(f"  First frame source: {prev_path}")
+    print(f"  Extracting last frame...")
+    ff.extract_last_frame(prev_path, frame_path,
+                          executable=ctx.get("ffmpeg_exe") or "ffmpeg")
+    print(f"  Uploading first frame to ComfyUI...")
+    return provider.client.upload_image(frame_path)
+
+
 def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                     only_scene=None, force_all: bool = False) -> dict:
     """Generate clips. Per-scene storyboard durations preserved. Atomic.
@@ -529,6 +567,15 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                   else None)
     skip_duration = bool(getattr(provider, "fixed_duration", False))
     needs_image = bool(getattr(provider, "needs_input_image", True))
+    chain = bool(ctx.get("first_frame_chain", False)) and bool(
+        getattr(provider, "supports_first_frame", False))
+    if ctx.get("first_frame_chain", False) and not getattr(
+            provider, "supports_first_frame", False):
+        raise ValueError(
+            f"--use-first-frame is not supported by video model "
+            f"'{ctx.get('video_model')}'.")
+    if chain:
+        print("First-frame chaining: enabled")
     if motion_clips is not None:
         print(f"  Motion clips: {len(motion_clips)} "
               f"({os.path.basename(os.path.dirname(motion_clips[0]))}/)")
@@ -571,6 +618,7 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
             completed.append(sid)
             continue
         tmp = dest + ".tmp"
+        first_frame = chain_first_frame_upload(ctx, scenes, sid) if chain else None
         if motion is not None:
             print(f"  scene {sid}/{len(scenes)}: video "
                   f"(ref={os.path.basename(str(src))}, "
@@ -585,7 +633,8 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                 prompt=scene["video_prompt"], negative_prompt=ctx["vid_neg"],
                 input_image=src, width=ctx["target_w"], height=ctx["target_h"],
                 duration=expected, seed=ctx["base_seed"] + 1000 + sid,
-                output_path=tmp, motion_video=(Path(motion) if motion else None)))
+                output_path=tmp, motion_video=(Path(motion) if motion else None),
+                first_frame=first_frame))
         except KeyboardInterrupt:
             _cleanup_tmp(tmp)
             raise StageInterrupted(
@@ -997,6 +1046,10 @@ def parse_args(argv=None):
                         "files (1.txt, 2.txt, ...); relative paths resolve "
                         "against projects/<project>/. Each file is one clip's "
                         "complete video prompt (no storyboard/research).")
+    p.add_argument("--use-first-frame", action="store_true",
+                   help="MiniMax H3 continuity chaining for --prompt-dir: "
+                        "clip N > 1 uses the last frame of clip N-1 as its "
+                        "first-frame input (clip 1 stays pure T2V).")
     p.add_argument("--continuous", action="store_true",
                    help="Chain mode: one image + one prompt -> Qwen-planned "
                         "continuous clips (last frame chains to next)")
@@ -1408,6 +1461,7 @@ def main(argv=None) -> int:
         "subject": None, "ffmpeg_exe": ffmpeg_exe,
         "reference_image": reference_image, "motion_clips": motion_clips,
         "motion_dir": args.motion_dir, "prompt_mode": prompt_mode,
+        "first_frame_chain": bool(getattr(args, "use_first_frame", False)),
     }
 
     try:
