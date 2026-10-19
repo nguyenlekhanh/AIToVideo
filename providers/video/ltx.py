@@ -40,6 +40,13 @@ REQUIRED_NODE_CLASSES = (
 class LtxVideoProvider(VideoProvider):
     provider_id = "ltx"
 
+    # First-frame chaining (--use-first-frame/--image-1-dir): an uploaded
+    # image name may arrive via request.first_frame and is used directly
+    # as the LoadImage input (no local upload). Imageless requests fall
+    # back to the T2V graph (workflow_ref); storyboard I2V flows always
+    # pass input_image, so they never take that path.
+    supports_first_frame = True
+
     def __init__(self, name: str = "ltx", settings: dict | None = None,
                  client: ComfyClient | None = None):
         self.name = name
@@ -74,11 +81,12 @@ class LtxVideoProvider(VideoProvider):
         return label, megapixels, (final_w, final_h)
 
     # -- workflow handling (structure-aware, id-independent) --
-    def load_workflow(self) -> dict:
-        if not self.workflow_path or not os.path.isfile(self.workflow_path):
+    def load_workflow(self, path: str | None = None) -> dict:
+        workflow_path = path or self.workflow_path
+        if not workflow_path or not os.path.isfile(workflow_path):
             raise ProviderError(self.provider_id, "Workflow file not found.",
-                                workflow=self.workflow_path or "(unset)")
-        with open(self.workflow_path, encoding="utf-8") as f:
+                                workflow=workflow_path or "(unset)")
+        with open(workflow_path, encoding="utf-8") as f:
             wf = json.load(f)
         wf.pop("_meta", None)
         present = {n.get("class_type") for n in wf.values()}
@@ -86,7 +94,7 @@ class LtxVideoProvider(VideoProvider):
         if missing:
             raise ProviderError(
                 self.provider_id, f"Workflow is not the LTX-2.5 I2V graph; missing: {missing}.",
-                workflow=os.path.basename(self.workflow_path))
+                workflow=os.path.basename(workflow_path))
         return wf
 
     @staticmethod
@@ -128,7 +136,10 @@ class LtxVideoProvider(VideoProvider):
                   seed: int, duration: int, image_name: str,
                   aspect_label: str, megapixels: float) -> dict:
         wf = copy.deepcopy(template)
-        found = self._find_nodes(wf)
+        # Explicit base resolution (not self): _generate_with_image reuses
+        # this for sibling-graph routing on subclasses with their own
+        # _find_nodes override.
+        found = LtxVideoProvider._find_nodes(wf)
         wf[found["prompt"]]["inputs"]["value"] = video_prompt
         wf[found["negative"]]["inputs"]["text"] = negative_prompt
         for nid in found["seeds"]:
@@ -141,15 +152,25 @@ class LtxVideoProvider(VideoProvider):
 
     # -- VideoProvider interface --
     def generate(self, request: VideoRequest) -> VideoResult:
-        if request.input_image is not None and not os.path.isfile(request.input_image):
-            raise ProviderError(self.provider_id,
-                                f"Input image not found: {request.input_image}.")
         duration = int(round(request.duration))
         if duration < 1 or duration > 30:
             raise ValueError(f"Duration out of range (1..30s): {request.duration}.")
         width, height = self.adjust_dimensions(request.width, request.height)
         aspect_label, megapixels, (final_w, final_h) = self.selector_settings(width, height)
         seed = request.seed if request.seed is not None else random.randint(0, 2**31 - 1)
+        if request.first_frame is not None:
+            # Chained/initial image: already uploaded by the pipeline;
+            # image-condition the I2V graph with that filename directly.
+            return self._generate_with_image(
+                request, seed, duration, aspect_label, megapixels,
+                request.first_frame)
+        if request.input_image is None:
+            return self._generate_t2v(
+                request, seed, duration, aspect_label, megapixels,
+                final_w, final_h)
+        if not os.path.isfile(request.input_image):
+            raise ProviderError(self.provider_id,
+                                f"Input image not found: {request.input_image}.")
         wf_name = os.path.basename(self.workflow_path)
         try:
             template = self.load_workflow()
@@ -158,6 +179,68 @@ class LtxVideoProvider(VideoProvider):
                                 negative_prompt=request.negative_prompt, seed=seed,
                                 duration=duration, image_name=stored,
                                 aspect_label=aspect_label, megapixels=megapixels)
+            dest = self.client.run(wf, ("video", "gifs", "images"), str(request.output_path))
+        except ComfyError as exc:
+            raise ProviderError(self.provider_id, "Video generation failed.",
+                                workflow=wf_name, detail=str(exc)) from exc
+        return VideoResult(path=Path(dest), width=final_w, height=final_h)
+
+    def _i2v_workflow_path(self) -> str:
+        """I2V graph location: this provider's own workflow."""
+        return self.workflow_path
+
+    def _generate_with_image(self, request: VideoRequest, seed: int,
+                             duration: int, aspect_label: str,
+                             megapixels: float, image_name: str) -> VideoResult:
+        """I2V graph with a pre-uploaded image name (no local upload).
+
+        Explicitly the LTX-2.5 I2V graph/customize (never the T2V
+        override): subclasses route here precisely because the T2V graph
+        cannot consume images.
+        """
+        width, height = self.adjust_dimensions(request.width, request.height)
+        _, _, (final_w, final_h) = self.selector_settings(width, height)
+        i2v_path = self._i2v_workflow_path()
+        wf_name = os.path.basename(i2v_path)
+        try:
+            template = LtxVideoProvider.load_workflow(self, i2v_path)
+            wf = LtxVideoProvider.customize(
+                self, template, video_prompt=request.prompt,
+                negative_prompt=request.negative_prompt, seed=seed,
+                duration=duration, image_name=image_name,
+                aspect_label=aspect_label, megapixels=megapixels)
+            dest = self.client.run(wf, ("video", "gifs", "images"), str(request.output_path))
+        except ComfyError as exc:
+            raise ProviderError(self.provider_id, "Video generation failed.",
+                                workflow=wf_name, detail=str(exc)) from exc
+        return VideoResult(path=Path(dest), width=final_w, height=final_h)
+
+    def _generate_t2v(self, request: VideoRequest, seed: int, duration: int,
+                      aspect_label: str, megapixels: float,
+                      final_w: int, final_h: int) -> VideoResult:
+        """Imageless fallback through the sibling T2V graph (workflow_ref).
+
+        Only reachable when no local image and no uploaded frame exist
+        (prompt-file flows); storyboard I2V always passes input_image.
+        Reuses the validated T2V customize logic (lazy import: ltx_t2v
+        imports this module).
+        """
+        from .ltx_t2v import LtxT2VVideoProvider
+        ref_path = self.settings.get("workflow_ref_path", "")
+        if not ref_path or not os.path.isfile(ref_path):
+            raise ProviderError(self.provider_id,
+                                "Text-to-video fallback unavailable.",
+                                workflow=ref_path or "(unset)")
+        wf_name = os.path.basename(ref_path)
+        try:
+            with open(ref_path, encoding="utf-8") as f:
+                template = json.load(f)
+            template.pop("_meta", None)
+            wf = LtxT2VVideoProvider.customize(
+                self, template, video_prompt=request.prompt,
+                negative_prompt=request.negative_prompt, seed=seed,
+                duration=duration, aspect_label=aspect_label,
+                megapixels=megapixels)
             dest = self.client.run(wf, ("video", "gifs", "images"), str(request.output_path))
         except ComfyError as exc:
             raise ProviderError(self.provider_id, "Video generation failed.",

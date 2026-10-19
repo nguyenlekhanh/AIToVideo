@@ -43,7 +43,8 @@
     "ltx": {
       "provider": "ltx",
       "workflow": "workflows/video/ltx2_5_i2v.json",
-      "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly"
+      "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly",
+      "workflow_ref": "workflows/video/ltx2_5_t2v.json"
     },
     "wan": {
       "provider": "wan",
@@ -58,7 +59,8 @@
     "ltx_t2v": {
       "provider": "ltx_t2v",
       "workflow": "workflows/video/ltx2_5_t2v.json",
-      "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly"
+      "negative_prompt": "pc game, console game, video game, cartoon, childish, ugly",
+      "workflow_ref": "workflows/video/ltx2_5_i2v.json"
     },
     "minimax_h3": {
       "provider": "minimax_h3",

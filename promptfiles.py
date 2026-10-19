@@ -28,6 +28,9 @@ import re
 
 PROMPT_EXTENSION = ".txt"
 MANIFEST_FILENAME = "manifest.json"
+# Image formats accepted for clip-1 initial images (ComfyUI LoadImage
+# compatible; matched case-insensitively like prompt discovery).
+INITIAL_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 
 
 def _natural_sort_key(path: str) -> list:
@@ -103,6 +106,38 @@ def read_prompt_text(path: str) -> str:
         raise ValueError(f"Prompt file is empty: {path}. "
                          f"Each prompt file must contain one video prompt.")
     return text
+
+
+def discover_initial_image(directory: str, clip_id: int = 1) -> str | None:
+    """Find the initial image for one clip (default clip 1).
+
+    Matches numeric stems equal to `clip_id` with a supported image
+    extension (case-insensitive): 1.png, 1.JPG, 001.webp. Unrelated names
+    (image1.png, scene_001.png, 1_backup.png, 10.png) are ignored.
+    Returns the path, or None when no match exists (caller falls back to
+    T2V). Raises ValueError listing the files when several match --
+    never picks arbitrarily. Source images are only read, never modified.
+    """
+    matches = []
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        stem, ext = os.path.splitext(name)
+        if ext.lower() not in INITIAL_IMAGE_EXTENSIONS:
+            continue
+        if not re.fullmatch(r"[0-9]+", stem):
+            continue
+        number = int(stem)
+        if number != clip_id:
+            continue
+        matches.append(path)
+    if len(matches) > 1:
+        raise ValueError(
+            f"Multiple initial images for clip {clip_id} in {directory}: "
+            + ", ".join(os.path.basename(p) for p in matches)
+            + ". Keep exactly one.")
+    return matches[0] if matches else None
 
 
 def manifest_path(prompt_dir: str) -> str | None:

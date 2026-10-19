@@ -188,8 +188,13 @@ def validate_cli_combination(args) -> str | None:
     if bool(getattr(args, "use_first_frame", False)):
         if not prompt_dir:
             return "--use-first-frame requires --prompt-dir"
-        if getattr(args, "video_model", "ltx") != "minimax_h3":
-            return "--use-first-frame is only supported by --video-model minimax_h3"
+        if getattr(args, "video_model", "ltx") not in ("minimax_h3", "ltx", "ltx_t2v"):
+            return "--use-first-frame is only supported by --video-model minimax_h3/ltx"
+    if getattr(args, "image_1_dir", None):
+        if not prompt_dir:
+            return "--image-1-dir requires --prompt-dir"
+        if getattr(args, "video_model", "ltx") not in ("minimax_h3", "ltx", "ltx_t2v"):
+            return "--image-1-dir is only supported by --video-model minimax_h3/ltx"
     return None
 
 
@@ -567,6 +572,15 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                   else None)
     skip_duration = bool(getattr(provider, "fixed_duration", False))
     needs_image = bool(getattr(provider, "needs_input_image", True))
+    if (needs_image and ctx.get("prompt_mode")
+            and getattr(provider, "supports_first_frame", False)
+            and (ctx.get("video_model") != "ltx"
+                 or ctx.get("first_frame_chain") or ctx.get("image_1_dir"))):
+        # Prompt first-frame flows satisfy imagery via uploaded frames
+        # (chaining/initial image) or the provider T2V fallback: no local
+        # scene images exist in prompt mode, so don't require them here.
+        # Per-scene requirements (previous-clip validity) still apply.
+        needs_image = False
     chain = bool(ctx.get("first_frame_chain", False)) and bool(
         getattr(provider, "supports_first_frame", False))
     if ctx.get("first_frame_chain", False) and not getattr(
@@ -576,6 +590,22 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
             f"'{ctx.get('video_model')}'.")
     if chain:
         print("First-frame chaining: enabled")
+    image_1_dir = ctx.get("image_1_dir")
+    if image_1_dir and not getattr(provider, "supports_first_frame", False):
+        raise ValueError(
+            f"--image-1-dir is not supported by video model "
+            f"'{ctx.get('video_model')}'.")
+    initial_image = None
+    first_id = min(by_id) if by_id else None
+    if image_1_dir and getattr(provider, "supports_first_frame", False):
+        # Discovery only (cheap); the upload happens lazily when clip 1
+        # actually generates, so resume skips never touch ComfyUI.
+        initial_image = pf.discover_initial_image(image_1_dir)
+        if initial_image is None:
+            print(f"  Initial image: none found in {image_1_dir} "
+                  f"(clip 1 uses T2V)")
+        else:
+            print(f"  Initial image: {initial_image}")
     if motion_clips is not None:
         print(f"  Motion clips: {len(motion_clips)} "
               f"({os.path.basename(os.path.dirname(motion_clips[0]))}/)")
@@ -619,6 +649,14 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
             continue
         tmp = dest + ".tmp"
         first_frame = chain_first_frame_upload(ctx, scenes, sid) if chain else None
+        if (first_frame is None and initial_image is not None
+                and sid == first_id):
+            # Clip-1 initial image only; later clips use chaining (when
+            # enabled) or T2V -- the initial image never overrides them.
+            print(f"  First frame: initial image "
+                  f"{os.path.basename(initial_image)}")
+            print(f"  Uploading first frame to ComfyUI...")
+            first_frame = provider.client.upload_image(initial_image)
         if motion is not None:
             print(f"  scene {sid}/{len(scenes)}: video "
                   f"(ref={os.path.basename(str(src))}, "
@@ -1050,6 +1088,11 @@ def parse_args(argv=None):
                    help="MiniMax H3 continuity chaining for --prompt-dir: "
                         "clip N > 1 uses the last frame of clip N-1 as its "
                         "first-frame input (clip 1 stays pure T2V).")
+    p.add_argument("--image-1-dir", default=None,
+                   help="Project-local directory with an optional initial "
+                        "image for clip 1 (1.png/.jpg/.jpeg/.webp); relative "
+                        "paths resolve against projects/<project>/. Clip 1 "
+                        "uses it as First Frame when present, else T2V.")
     p.add_argument("--continuous", action="store_true",
                    help="Chain mode: one image + one prompt -> Qwen-planned "
                         "continuous clips (last frame chains to next)")
@@ -1338,6 +1381,17 @@ def main(argv=None) -> int:
         except (OSError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
+    image_1_dir_abs = None
+    if getattr(args, "image_1_dir", None):
+        # Fail fast before contacting ComfyUI; missing matches still fall
+        # back to T2V later (only a missing directory is fatal here).
+        image_1_dir_abs = (args.image_1_dir
+                           if os.path.isabs(args.image_1_dir)
+                           else os.path.join(base_dir, args.image_1_dir))
+        if not os.path.isdir(image_1_dir_abs):
+            print(f"Error: --image-1-dir not found: {image_1_dir_abs}.",
+                  file=sys.stderr)
+            return 1
     if resume_mode:
         if prompt_mode:
             # Prompt-file resume: scenes come from prompt/*.txt verbatim.
@@ -1370,7 +1424,12 @@ def main(argv=None) -> int:
             default_duration=default_duration, stage=args.stage,
             only_scene=args.scene,
             video_needs_images=not (wan_motion and reference_image) and not is_t2v
-            and vid_entry.get("provider") != "minimax_h3",
+            and vid_entry.get("provider") != "minimax_h3"
+            and not (bool(prompt_mode) and (
+                vid_entry.get("provider") == "ltx_t2v"
+                or (vid_entry.get("provider") == "ltx"
+                    and bool(getattr(args, "use_first_frame", False)
+                             or getattr(args, "image_1_dir", None))))),
             check_video_duration=not wan_motion)
         if resume_problems:
             print("Error: " + "\nError: ".join(resume_problems), file=sys.stderr)
@@ -1462,6 +1521,7 @@ def main(argv=None) -> int:
         "reference_image": reference_image, "motion_clips": motion_clips,
         "motion_dir": args.motion_dir, "prompt_mode": prompt_mode,
         "first_frame_chain": bool(getattr(args, "use_first_frame", False)),
+        "image_1_dir": image_1_dir_abs,
     }
 
     try:

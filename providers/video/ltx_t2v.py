@@ -44,6 +44,10 @@ class LtxT2VVideoProvider(LtxVideoProvider):
 
     # Pipeline contract: this backend takes no input image.
     needs_input_image = False
+    # First-frame chaining (--use-first-frame/--image-1-dir): a chained
+    # clip is routed through the sibling I2V graph (workflow_ref) with
+    # the uploaded frame as its LoadImage input. The T2V graph itself
+    # has no image input (LoadImage is banned there by validation).
 
     def __init__(self, name: str = "ltx_t2v",
                  settings: dict | None = None,
@@ -51,6 +55,11 @@ class LtxT2VVideoProvider(LtxVideoProvider):
         # Bypass LtxVideoProvider.__init__ only in name; settings/client
         # handling is identical.
         super().__init__(name=name, settings=settings, client=client)
+
+    def _i2v_workflow_path(self) -> str:
+        """I2V graph location: the sibling reference workflow, since this
+        provider's own workflow is the image-free T2V graph."""
+        return self.settings.get("workflow_ref_path", "")
 
     def load_workflow(self) -> dict:
         if not self.workflow_path or not os.path.isfile(self.workflow_path):
@@ -111,7 +120,9 @@ class LtxT2VVideoProvider(LtxVideoProvider):
                   seed: int, duration: int,
                   aspect_label: str, megapixels: float) -> dict:
         wf = copy.deepcopy(template)
-        found = self._find_nodes(wf)
+        # Explicit class resolution (not self): the LTX I2V provider reuses
+        # this for its imageless T2V fallback via an unbound call.
+        found = LtxT2VVideoProvider._find_nodes(wf)
         wf[found["prompt"]]["inputs"]["value"] = video_prompt
         wf[found["negative"]]["inputs"]["text"] = negative_prompt
         for nid in found["seeds"]:
@@ -133,6 +144,14 @@ class LtxT2VVideoProvider(LtxVideoProvider):
         width, height = self.adjust_dimensions(request.width, request.height)
         aspect_label, megapixels, (final_w, final_h) = self.selector_settings(width, height)
         seed = request.seed if request.seed is not None else random.randint(0, 2**31 - 1)
+        if request.first_frame is not None:
+            # Chained/initial image: the T2V graph cannot consume it, so
+            # route through the verified I2V graph (workflow_ref) with the
+            # already-uploaded filename. Duration/resolution handling is
+            # identical (same math, same selector).
+            return self._generate_with_image(
+                request, seed, duration, aspect_label, megapixels,
+                request.first_frame)
         wf_name = os.path.basename(self.workflow_path)
         try:
             template = self.load_workflow()

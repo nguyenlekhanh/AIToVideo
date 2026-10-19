@@ -92,13 +92,20 @@ class CliTest(unittest.TestCase):
                                 "minimax_h3", "--use-first-frame"])
         self.assertIn("--prompt-dir", main.validate_cli_combination(args))
 
-    def test_rejects_non_minimax(self):
-        for model in ("ltx", "wan", "wan_animate2"):
+    def test_rejects_unsupported_backends(self):
+        for model in ("wan", "wan_animate2"):
             args = main.parse_args(["--project", "w", "--prompt-dir", "prompt",
                                     "--video-model", model,
                                     "--use-first-frame"])
             err = main.validate_cli_combination(args)
             self.assertIn("minimax_h3", err)
+
+    def test_accepts_ltx_family(self):
+        for model in ("ltx", "ltx_t2v"):
+            args = main.parse_args(["--project", "w", "--prompt-dir", "prompt",
+                                    "--video-model", model,
+                                    "--use-first-frame"])
+            self.assertIsNone(main.validate_cli_combination(args))
 
 
 class ProviderChainTest(unittest.TestCase):
@@ -273,14 +280,14 @@ class StageChainTest(unittest.TestCase):
             self.assertEqual(prov.client.uploads, [])
 
     def test_unsupported_backend_rejected_in_stage(self):
-        from providers.video.ltx import LtxVideoProvider
-        entry = lookup(AI_VIDEO_DIR, "video", "ltx")
-        ltx = LtxVideoProvider(name="ltx", settings=dict(entry),
+        from providers.video.wan import WanVideoProvider
+        entry = lookup(AI_VIDEO_DIR, "video", "wan")
+        wan = WanVideoProvider(name="wan", settings=dict(entry),
                                client=StubClient())
         with tempfile.TemporaryDirectory() as tmp:
             prompt_dir = make_prompt_dir(tmp, "One.")
-            ctx = make_ctx(tmp, ltx)
-            ctx["video_model"] = "ltx"
+            ctx = make_ctx(tmp, wan)
+            ctx["video_model"] = "wan"
             scenes = pf.load_prompt_scenes(prompt_dir, 10.0)
             with patch.object(st, "valid_video_file",
                               side_effect=lambda p, *a: str(p).endswith(".tmp")):
