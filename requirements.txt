@@ -1,2 +1,4 @@
 edge-tts>=6.0
 pyyaml>=6.0
+requests>=2.31
+Pillow>=10.0

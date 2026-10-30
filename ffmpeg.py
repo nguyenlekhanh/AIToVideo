@@ -89,6 +89,58 @@ def probe_streams(path: str, ffprobe_exe: str = "ffprobe") -> list[str]:
         return []
 
 
+def fit_audio_duration(audio_path: str, target_seconds: float,
+                       out_path: str | None = None,
+                       executable: str = "ffmpeg") -> str:
+    """Pad or gently speed up narration to exactly one clip duration.
+
+    Auto-ad clips have a fixed 124-frame / 5.1667s duration. TTS output is
+    usually shorter, and mux_scene trims video to the narration length.
+    Without this step a 6-clip ad would silently become ~24s instead of
+    ~31s. Padding is silence; if narration is too long it is sped up with
+    atempo (bounded to a natural 0.5x-2.0x range) before trimming.
+    """
+    target = float(target_seconds)
+    if target <= 0:
+        raise ValueError("target_seconds must be positive.")
+    duration = probe_duration(audio_path)
+    if duration <= 0:
+        raise RuntimeError(f"Cannot probe narration duration: {audio_path}")
+    out = out_path or audio_path
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    tmp = out + ".fit.mp3"
+    filters = []
+    if duration > target + 0.01:
+        tempo = duration / target
+        if tempo > 2.0:
+            raise RuntimeError(
+                f"Narration is {duration:.2f}s for a {target:.2f}s clip; "
+                "it cannot be fitted without unnatural speed-up.")
+        filters.append(f"atempo={tempo:.6f}")
+    filters.append(f"apad=whole_dur={target:.6f}")
+    run([executable, "-y", "-i", audio_path,
+         "-af", ",".join(filters), "-t", f"{target:.6f}",
+         "-vn", "-c:a", "libmp3lame", "-b:a", "128k", tmp])
+    os.replace(tmp, out)
+    return out
+
+
+def probe_video_size(path: str, ffprobe_exe: str = "ffprobe") -> tuple[int, int]:
+    """First video stream dimensions as (width, height), or (0, 0)."""
+    exe = shutil.which(ffprobe_exe) or ffprobe_exe
+    try:
+        out = subprocess.run(
+            [exe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "json", path],
+            check=True, capture_output=True, text=True).stdout
+        streams = json.loads(out).get("streams") or []
+        if not streams:
+            return 0, 0
+        return int(streams[0].get("width", 0)), int(streams[0].get("height", 0))
+    except Exception:
+        return 0, 0
+
+
 def mux_scene(video_path: str, audio_path: str, out_path: str,
               executable: str = "ffmpeg", crf: int = 19, preset: str = "veryfast",
               copy_video: bool = False) -> str:

@@ -55,6 +55,66 @@ def _extract_json(text: str) -> dict:
     return json.loads(m.group(0))
 
 
+def chat_json(system: str, user: str, *, model: str,
+              base_url: str = "http://127.0.0.1:11434",
+              timeout: int = 600, temperature: float = 0.2,
+              num_predict: int = 4096,
+              images: list[str] | None = None,
+              think: bool | None = False) -> dict:
+    """One Ollama chat call that must return a JSON object.
+
+    This is a small public wrapper around the same /api/chat transport
+    used by the storyboard code. It never parses prose: malformed or
+    truncated output raises so callers can retry or stop. `images` is a
+    list of base64 strings for vision models.
+    """
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    if images:
+        messages[-1]["images"] = list(images)
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": temperature, "num_predict": num_predict},
+    }
+    if think is not None:
+        payload["think"] = bool(think)
+    try:
+        result = _post(f"{base_url.rstrip('/')}/api/chat", payload, timeout)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Ollama chat failed (model={model}): {exc}") from exc
+    if result.get("done_reason") == "length":
+        raise RuntimeError(
+            f"Ollama response was truncated (model={model}, "
+            f"num_predict={num_predict}); reduce the requested output or "
+            f"raise num_predict.")
+    message = result.get("message") or {}
+    content = message.get("content", "")
+    if not isinstance(content, str) or not content.strip():
+        # Some Qwen3-VL builds put the answer in `thinking` when
+        # think=False is requested. Accept it only when it parses as JSON;
+        # never parse arbitrary prose.
+        thinking = message.get("thinking", "")
+        if isinstance(thinking, str) and thinking.strip():
+            content = thinking
+        else:
+            raise RuntimeError(f"Ollama returned an empty response (model={model}).")
+    try:
+        parsed = _extract_json(content)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Ollama did not return valid JSON (model={model}): {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(
+            f"Ollama returned JSON that is not an object (model={model}).")
+    return parsed
+
+
 def rewrite_scene_narration(scene: dict, facts: list[dict], reason: str,
                             model: str, base_url: str = "http://127.0.0.1:11434",
                             timeout: int = 180) -> dict:

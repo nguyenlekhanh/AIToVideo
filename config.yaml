@@ -10,8 +10,12 @@
 ollama:
   url: "http://127.0.0.1:11434"
   model: "qwen3:8b"
+  # Vision model used only by --auto-ad to verify downloaded product images.
+  vision_model: "qwen3-vl:8b"
   num_scenes: 3
   timeout: 180
+  # Auto-ad planning can be slower than storyboard generation.
+  planning_timeout: 600
 
 comfyui:
   url: "http://127.0.0.1:8188"
@@ -32,3 +36,16 @@ ffmpeg:
   ffprobe_executable: "ffprobe"
   crf: 19
   preset: "veryfast"
+
+# Opt-in --auto-ad product research. Existing pipelines ignore this section.
+product_ad:
+  timeout: 30
+  vision_timeout: 240
+  max_image_bytes: 8000000
+  # Local English TTS for auto-ad. Edge TTS may be blocked by its service;
+  # Piper is the existing offline audio provider in this project.
+  audio_model: "piper_en"
+  voice: "en_US-amy-medium"
+  # Fail rather than silently using page images that a vision model did not
+  # confirm. Set false only for offline/testing use.
+  require_vision_verification: true

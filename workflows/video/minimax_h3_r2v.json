@@ -1,0 +1,379 @@
+{
+  "92": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": [
+        "130",
+        0
+      ],
+      "filename_prefix": "video/MiniMax_H3",
+      "format": "auto",
+      "format.codec": "auto",
+      "codec": "auto"
+    }
+  },
+  "119": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    }
+  },
+  "121": {
+    "class_type": "VAEDecodeAudio",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "120",
+        0
+      ]
+    }
+  },
+  "122": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "125",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ]
+    }
+  },
+  "123": {
+    "class_type": "KSamplerSelect",
+    "inputs": {
+      "sampler_name": "res_multistep"
+    }
+  },
+  "124": {
+    "class_type": "BasicScheduler",
+    "inputs": {
+      "model": [
+        "151",
+        0
+      ],
+      "steps": [
+        "142",
+        0
+      ],
+      "scheduler": "simple",
+      "denoise": 1
+    }
+  },
+  "126": {
+    "class_type": "BasicGuider",
+    "inputs": {
+      "model": [
+        "150",
+        0
+      ],
+      "conditioning": [
+        "136",
+        0
+      ]
+    }
+  },
+  "128": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    }
+  },
+  "129": {
+    "class_type": "RandomNoise",
+    "inputs": {
+      "noise_seed": 893047655095110,
+      "control_after_generate": "randomize"
+    }
+  },
+  "130": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": [
+        "122",
+        0
+      ],
+      "audio": [
+        "121",
+        0
+      ],
+      "fps": 24,
+      "bit_depth": 8,
+      "color_space": "sRGB"
+    }
+  },
+  "131": {
+    "class_type": "ComfyMathExpression",
+    "inputs": {
+      "values.a": [
+        "132",
+        0
+      ],
+      "expression": "max(5, round(a * 24)) + (5 - (max(5, round(a * 24)) % 17)) % 17"
+    }
+  },
+  "143": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 20,
+      "fixed": "fixed"
+    }
+  },
+  "144": {
+    "class_type": "PrimitiveInt",
+    "inputs": {
+      "value": 4,
+      "fixed": "fixed"
+    }
+  },
+  "146": {
+    "class_type": "PrimitiveBoolean",
+    "inputs": {
+      "value": false
+    }
+  },
+  "139": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "Daughter_20261015101928.jpg",
+      "upload": "image"
+    }
+  },
+  "147": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "Editing_family_characters_clothi\u2026_20261015101920.jpg",
+      "upload": "image"
+    }
+  },
+  "125": {
+    "class_type": "SamplerCustomAdvanced",
+    "inputs": {
+      "noise": [
+        "129",
+        0
+      ],
+      "guider": [
+        "126",
+        0
+      ],
+      "sampler": [
+        "123",
+        0
+      ],
+      "sigmas": [
+        "124",
+        0
+      ],
+      "latent_image": [
+        "136",
+        1
+      ]
+    }
+  },
+  "142": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "on_false": [
+        "143",
+        0
+      ],
+      "on_true": [
+        "144",
+        0
+      ],
+      "switch": [
+        "146",
+        0
+      ]
+    }
+  },
+  "145": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "strength_model": 1
+    }
+  },
+  "127": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "141": {
+    "class_type": "ComfySwitchNode",
+    "inputs": {
+      "on_false": [
+        "127",
+        0
+      ],
+      "on_true": [
+        "145",
+        0
+      ],
+      "switch": [
+        "146",
+        0
+      ]
+    }
+  },
+  "115": {
+    "class_type": "ResolutionSelector",
+    "inputs": {
+      "aspect_ratio": "9:16 (Portrait Widescreen)",
+      "megapixels": 0.9,
+      "multiple": 32
+    }
+  },
+  "132": {
+    "class_type": "PrimitiveFloat",
+    "inputs": {
+      "value": 10
+    }
+  },
+  "149": {
+    "class_type": "H3MemoryOptimization",
+    "inputs": {
+      "model": [
+        "127",
+        0
+      ],
+      "fused_qkv": "auto",
+      "mlp_memory": "auto",
+      "chunk_rows": 4096,
+      "preserve_precision": true,
+      "precision_mode": "Auto",
+      "qkv_streaming_mode": "Auto",
+      "embedding_memory_mode": "Auto",
+      "kitchen_v_memory_mode": "Standard"
+    }
+  },
+  "137": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "Edit_mother_clothing_design_20261015101922.jpg",
+      "upload": "image"
+    }
+  },
+  "138": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": "[SHOT 02 | DURATION: 10s | PRIMARY CAMERA SETUP: Wide shot, eye-level, static camera, entire living room and all three characters visible]\n\n**Subject definition:**\n\n<Subject 1> Mother, based on the provided Mother character reference, ref_image_1:\n\nLock the precise facial features, hairstyle, clothing, body proportions, skin tone, and character identity. Maintain the exact same appearance as Clip 1. Mother is standing in the living room with her arms open, expecting her daughter to run toward her for a hug. Her expression changes from happy anticipation to surprise and playful disappointment when Daughter runs past her toward Father.\n\n<Subject 2> Daughter, based on the provided Daughter character reference, ref_image_2:\n\nLock the precise facial features, hairstyle, clothing, body proportions, skin tone, and character identity. Maintain the exact same appearance as Clip 1. Daughter is the same little girl who was playing on the rug in Clip 1. She is now standing and preparing to run toward her parents. She runs past Mother, goes directly to Father, hugs him tightly, and gives him a loving kiss on the cheek.\n\n<Subject 3> Father, based on the provided Father character reference, ref_image_3:\n\nLock the precise facial features, hairstyle, clothing, body proportions, skin tone, and character identity. Maintain the exact same appearance as Clip 1. Father is standing just behind Mother, smiling warmly at Daughter. When Daughter runs toward him, he bends down, opens his arms, catches her gently, and embraces her. He looks pleasantly surprised and happy when she kisses his cheek.\n\n<Subject 4> Daughter continuing from the final frame of Clip 1, based on the actual last frame of Clip 1 and the provided Daughter pose reference, ref_image_4:\n\nUse the actual last frame of Clip 1 as the exact starting frame for this shot. Subject 4 is the same Daughter defined in Subject 2, not a separate character. Preserve her exact starting position, standing posture, body orientation, clothing, facial features, hairstyle, and distance from her parents as shown in the last frame.\n\nUse ref_image_2 as the primary character identity reference and ref_image_4 as a secondary reference for Daughter's original pose and appearance. Continue her movement naturally from the final frame of Clip 1. Do not reset her position, duplicate her, or generate another daughter.\n\n**Environment definition:**\n\nUse the actual last frame of Clip 1 as the primary visual continuity reference. Preserve the same living room, entrance door, beige sofa, rug, toys, lighting, furniture arrangement, and camera perspective.\n\nMother remains closer to Daughter, with Father positioned slightly behind Mother. Maintain the established spatial relationship until Daughter runs past Mother toward Father.\n\nDo not redesign the room or change the time of day. The entire action must take place in the same living room without a scene transition.\n\n**Summary:**\n\nA playful family comedy with a surprise twist. Mother opens her arms, convinced that Daughter is about to run to her. Instead, Daughter runs straight past Mother and rushes into Father's arms. Father bends down to hug her, and Daughter affectionately kisses his cheek. Mother is left standing with her arms open, realizing that she has been completely ignored. She slowly lowers her arms and gives them an exaggerated jealous, disappointed look. The ending is funny, expressive, and understandable without dialogue.\n\n**Retention analysis:**\n\nThe first second must immediately continue the anticipation established in Clip 1. Mother is already waiting with open arms, making the audience expect a mother-daughter hug. The unexpected change of direction is the central comedic twist. Daughter must visibly pass Mother before reaching Father, so the joke is unmistakable.\n\nThe emotional contrast is essential: Mother begins with a big welcoming smile, Father looks happy but does not initially expect to be chosen, and Daughter shows unmistakable excitement toward Father. The final reaction from Mother provides a second comedic beat. Use clear physical actions and readable facial expressions rather than exaggerated or chaotic movement.\n\n**Detailed description:**\n\n00:00\u201300:02 \u2014 Continue seamlessly from the exact last frame of Clip 1. Daughter is standing and preparing to run. Mother is smiling with both arms open, inviting Daughter into a hug. Father stands just behind Mother, watching Daughter with a warm smile. Daughter suddenly starts running forward with excitement.\n\n00:02\u201300:04 \u2014 Daughter runs directly toward Father, passing clearly in front of Mother without stopping. Mother initially smiles and leans forward, expecting a hug, but quickly realizes Daughter is running past her. Her smile freezes, her eyes widen, and her arms remain open in surprise. Father bends his knees and opens his arms to welcome Daughter.\n\n00:04\u201300:07 \u2014 Daughter reaches Father and throws both arms around his neck in a natural, affectionate hug. Father gently embraces her and lifts her slightly off the floor or supports her securely as she hugs him. Daughter gives Father one clear, affectionate kiss on the cheek. Father smiles broadly, visibly delighted. Keep the hug physically natural, with correct hand placement and no distorted limbs.\n\n00:07\u201300:10 \u2014 Father continues holding Daughter securely as she cuddles against him. Mother remains beside them, now realizing she has been completely ignored. She slowly lowers her arms, looks at Father and Daughter, then folds her arms across her chest and gives an exaggerated playful jealous pout. Father glances at Mother with a slightly amused, innocent expression while Daughter continues hugging him happily. End on Mother's funny disappointed face, with Father and Daughter embracing in the background.\n\n**Visual style:**\n\nUltra-realistic live-action family comedy, warm natural indoor lighting, authentic skin texture, realistic facial expressions, smooth body movement, natural running and stopping, believable hugging and kissing, accurate hand placement, consistent clothing and character identities, subtle cinematic depth of field, stable living room background, realistic family-home atmosphere.\n\n**Continuity constraints:**\n\nOne continuous shot, no cuts, no transitions, no sudden zooms. Start from the actual last frame of Clip 1 and preserve its composition, character positions, outfits, lighting, and environment.\n\nMother must remain in her original position as Daughter runs past her. Daughter must visibly pass Mother before reaching Father. Father must remain behind Mother until Daughter approaches him. Daughter hugs and kisses Father, not Mother. Mother reacts only after realizing Daughter has chosen Father.\n\nSubject 2 and Subject 4 refer to the same single Daughter. Do not generate a duplicate daughter. Preserve the exact identities and appearances from all character reference images. Maintain anatomically correct bodies, realistic contact between characters, natural movement, and consistent character scale.\n\nNo additional characters, no duplicate people, no teleportation, no unnatural running, no distorted hands, no extra limbs, no sudden outfit changes, no scene changes, no dialogue, no subtitles, no text, no watermark.\n\nThe emotional sequence must remain clear: Mother expects a hug \u2192 Daughter runs past Mother \u2192 Daughter hugs and kisses Father \u2192 Mother reacts with playful jealousy."
+    }
+  },
+  "153": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "frame_000242 (1).png",
+      "upload": "image"
+    }
+  },
+  "151": {
+    "class_type": "H3SparseAttention",
+    "inputs": {
+      "model": [
+        "149",
+        0
+      ],
+      "video_budget": 0.5,
+      "denser_early_late_steps": true
+    }
+  },
+  "150": {
+    "class_type": "H3SparseAttention",
+    "inputs": {
+      "model": [
+        "148",
+        0
+      ],
+      "video_budget": 0.65,
+      "denser_early_late_steps": true
+    }
+  },
+  "120": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+    }
+  },
+  "136": {
+    "class_type": "MiniMaxH3ReferenceToVideo",
+    "inputs": {
+      "clip": [
+        "128",
+        0
+      ],
+      "vae": [
+        "119",
+        0
+      ],
+      "audio_vae": [
+        "120",
+        0
+      ],
+      "ref_images.ref_image_0": [
+        "137",
+        0
+      ],
+      "ref_images.ref_image_1": [
+        "139",
+        0
+      ],
+      "ref_images.ref_image_2": [
+        "147",
+        0
+      ],
+      "ref_images.ref_image_3": [
+        "153",
+        0
+      ],
+      "prompt": [
+        "138",
+        0
+      ],
+      "width": [
+        "115",
+        0
+      ],
+      "height": [
+        "115",
+        1
+      ],
+      "length": [
+        "131",
+        1
+      ],
+      "ref_image_size": "match"
+    }
+  },
+  "148": {
+    "class_type": "H3MemoryOptimization",
+    "inputs": {
+      "model": [
+        "141",
+        0
+      ],
+      "fused_qkv": "auto",
+      "mlp_memory": "auto",
+      "chunk_rows": 4096,
+      "preserve_precision": true,
+      "precision_mode": "Auto",
+      "qkv_streaming_mode": "Auto",
+      "embedding_memory_mode": "Auto",
+      "kitchen_v_memory_mode": "Standard"
+    }
+  }
+}

@@ -36,6 +36,68 @@ Old-style invocations still work (`--model`, `--voice`, `--project`, `--seed`).
 Startup prints a summary (`Image/Video model`, `Aspect`, `Resolution`,
 `ComfyUI`, `Target`) plus per-scene final dimensions reported by each provider.
 
+## Opt-in product URL -> short ad
+
+`--auto-ad` is a separate, opt-in entry point. It does not change the normal
+prompt/research/storyboard path. It retrieves one HTTP(S) product page,
+extracts only verifiable product data, verifies product images, asks local
+Ollama to plan a grounded ad, writes Prompt V2 files, and then reuses the
+existing image/video/audio/finalize stages.
+
+```powershell
+python ai_video/main.py --project potaroma_ad --auto-ad `
+  --product-url "https://shop.tiktok.com/us/pdp/..." `
+  --video-model minimax_h3_r2v `
+  --ad-duration 30 --ad-clips 6 --ad-style ugc_product_showcase `
+  --ad-language en --resolution 480 --aspect 9:16 --stop-after all
+```
+
+- `--product-url` is required and configurable; there is no hardcoded product.
+- `--ad-duration` defaults to `30`; `--ad-style` defaults to
+  `ugc_product_showcase`; `--ad-language` defaults to `en`.
+- `--ad-clips` is optional. Without it the clip count is chosen from the
+  target duration and the R2V 5-second duration lattice (6 clips -> 31.0s).
+- Only `minimax_h3_r2v` is accepted for `--auto-ad`; other video models fail
+  clearly instead of silently falling back.
+- Product references are separate from character references. No
+  `--character-reference-dir` is needed or accepted in auto-ad mode.
+- Existing research/plans/prompts/clips/audio are reused only when the
+  product URL, product fingerprint, plan fingerprint and files validate.
+  A changed URL or plan requires an explicit `--overwrite`.
+- `--stop-after video` stops before audio and final mux. Use
+  `--stop-after all` for a complete spoken ad.
+- Auto-ad uses the existing local Piper provider (`piper_en` /
+  `en_US-amy-medium`) for English narration by default. The normal pipeline
+  still defaults to Edge TTS. Configure `product_ad.audio_model` and
+  `product_ad.voice` in `config.yaml` to change this.
+
+Auto-ad project layout:
+
+```
+ai_video/projects/<project>/
+  source/product.json          # normalized record + provenance
+  source/retrieval.json        # fetch/parse provenance
+  source/ad_analysis.json      # Ollama marketing analysis
+  source/images/               # downloaded raw images
+  product_reference/           # verified product identity references
+  image_start/1.png            # initial guide frame (first product image)
+  prompt/N.txt                 # Prompt V2 video prompts
+  prompt/manifest.json         # per-clip durations
+  prompt/ad_plan.json          # grounded plan + source/fingerprint metadata
+  videos/scene_001.mp4 ...
+  audio/scene_001.mp3 ...
+  muxed/                       # per-clip muxed video+voiceover
+  state.json
+  final.mp4
+```
+
+Safety and grounding: retrieval validates schemes/hosts, follows redirects
+manually, caps download size and rejects private/loopback destinations;
+HTML/model output is untrusted data. The planner may cite only extracted
+feature IDs. A deterministic claim guard rejects risky marketing terms that
+no verified feature supports. Invalid plans are retried a bounded number of
+times and never submit a video job.
+
 ## Output
 
 ```
@@ -57,6 +119,8 @@ lives in providers:
 ```
 ai_video/
   main.py                  # pipeline only, no model logic
+  product_research.py      # opt-in --auto-ad URL research/provenance/images
+  ad_planner.py            # grounded Ollama analysis/plan + Prompt V2
   config/
     models.json            # registry: model -> provider + workflow + defaults
   providers/

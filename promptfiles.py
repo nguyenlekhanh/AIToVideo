@@ -140,6 +140,57 @@ def discover_initial_image(directory: str, clip_id: int = 1) -> str | None:
     return matches[0] if matches else None
 
 
+def discover_character_refs(directory: str, max_refs: int | None = None) -> list[str]:
+    """Find character reference images, ordered by numeric stem.
+
+    Files qualify when their stem is a positive integer and their extension
+    is a supported image type (case-insensitive): 1.png, 02.JPG, 10.webp.
+    Non-image files and non-numeric names are ignored. Ordering is numeric
+    (2 before 10), independent of directory enumeration order, so the same
+    directory always maps to the same reference slots.
+
+    Returns absolute paths. Raises FileNotFoundError when the directory is
+    missing, ValueError when no reference image is found, when two files
+    share one number (1.png + 1.jpg), or when more than `max_refs` images
+    are present. Never picks arbitrarily and never modifies the sources.
+    """
+    if not os.path.isdir(directory):
+        raise FileNotFoundError(
+            f"Character reference directory not found: {directory}")
+    by_number: dict[int, list[str]] = {}
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        stem, ext = os.path.splitext(name)
+        if ext.lower() not in INITIAL_IMAGE_EXTENSIONS:
+            continue
+        if not re.fullmatch(r"[0-9]+", stem):
+            continue
+        number = int(stem)
+        if number < 1:
+            continue
+        by_number.setdefault(number, []).append(path)
+    duplicates = {n: paths for n, paths in by_number.items() if len(paths) > 1}
+    if duplicates:
+        details = "; ".join(
+            f"{n}: " + ", ".join(os.path.basename(p) for p in paths)
+            for n, paths in sorted(duplicates.items()))
+        raise ValueError(
+            f"Multiple character reference images share a number in "
+            f"{directory} ({details}). Keep exactly one per number.")
+    refs = [by_number[n][0] for n in sorted(by_number)]
+    if not refs:
+        raise ValueError(
+            f"No character reference images found in {directory}. "
+            f"Add numbered images (1.png, 2.jpg, ...).")
+    if max_refs is not None and len(refs) > max_refs:
+        raise ValueError(
+            f"Too many character reference images in {directory} "
+            f"({len(refs)}); at most {max_refs} are supported.")
+    return refs
+
+
 def manifest_path(prompt_dir: str) -> str | None:
     """prompt/manifest.json when present, else None (Version 1 mode)."""
     candidate = os.path.join(prompt_dir, MANIFEST_FILENAME)
@@ -194,7 +245,9 @@ def load_manifest(prompt_dir: str) -> dict[int, float] | None:
     return durations
 
 
-def load_prompt_scenes(prompt_dir: str, default_duration: float) -> list[dict]:
+def load_prompt_scenes(prompt_dir: str, default_duration: float,
+                       narration_by_clip: dict[int, str] | None = None
+                       ) -> list[dict]:
     """Build the minimal scene representation from prompt files.
 
     One file = one scene: {"id", "duration", "image_prompt", "video_prompt",
@@ -202,9 +255,10 @@ def load_prompt_scenes(prompt_dir: str, default_duration: float) -> list[dict]:
     default_duration (Version 1). With prompt/manifest.json, each scene
     takes clips["<id>"].duration; the manifest must cover exactly the
     discovered clips (missing entries and extra entries both fail loudly
-    before any generation). Narration is always "" (video prompts are never
-    narration; the audio stage behaves exactly as it would for narration
-    without text under existing validation rules).
+    before any generation). Narration is normally "" because prompt files
+    are video prompts, never narration. The opt-in auto-ad flow passes an
+    explicit narration_by_clip map from its separate ad plan; existing
+    callers are unchanged.
     """
     entries, _ignored = discover_prompt_files(prompt_dir)
     manifest = load_manifest(prompt_dir)
@@ -223,12 +277,13 @@ def load_prompt_scenes(prompt_dir: str, default_duration: float) -> list[dict]:
                 f"{', '.join(f'clip {n}' for n in extra)} "
                 f"({os.path.join(prompt_dir, MANIFEST_FILENAME)}).")
     scenes = []
+    narration_by_clip = narration_by_clip or {}
     for number, path in entries:
         scenes.append({"id": number,
                        "duration": manifest[number] if manifest is not None
                        else default_duration,
                        "image_prompt": "",
                        "video_prompt": read_prompt_text(path),
-                       "narration": "",
+                       "narration": str(narration_by_clip.get(number, "")),
                        "prompt_file": os.path.basename(path)})
     return scenes

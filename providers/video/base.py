@@ -20,6 +20,15 @@ class VideoRequest:
     # Uploaded ComfyUI filename for MiniMax first-frame chaining
     # (continuity PNG uploaded via the shared client; MiniMax-only).
     first_frame: str | None = None
+    # Local image paths shared by every clip for MiniMax R2V character
+    # references. The R2V provider uploads them (and caches the uploads);
+    # other backends ignore the field.
+    character_refs: list[str] | None = None
+    # Local verified product images shared by every clip. This is a
+    # distinct concept from character_refs; R2V combines them in template
+    # slot order (product first, then character) and never uses either as
+    # the guide/continuity frame.
+    product_refs: list[str] | None = None
     # Master identity reference for future identity-aware backends.
     # Existing backends (LTX/Wan/Wan Animate2) ignore it; their workflows
     # cannot consume a second image, so nothing is faked into them.

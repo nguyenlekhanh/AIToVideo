@@ -11,6 +11,7 @@ import json
 import os
 import random
 import re
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -24,6 +25,8 @@ import storyboard as sb
 import state as st
 import continuous as ch
 import script as sc
+import product_research as pr
+import ad_planner as ap
 from subject import SubjectProfile, compose_scene_prompt
 from providers.audio.base import AudioRequest
 from providers.comfy import ComfyClient
@@ -103,6 +106,48 @@ def validate_cli_combination(args) -> str | None:
     Returns an error message, or None when the combination is valid.
     Pure function (no I/O) so unit tests can cover every combination.
     """
+    auto_ad = bool(getattr(args, "auto_ad", False))
+    if auto_ad:
+        if bool(getattr(args, "continuous", False)):
+            return "cannot use --auto-ad with --continuous"
+        if not getattr(args, "product_url", None):
+            return "--auto-ad requires --product-url"
+        if args.prompt is not None:
+            return "cannot use a prompt with --auto-ad (the product URL is the source)"
+        if getattr(args, "prompt_dir", None):
+            return "cannot use --prompt-dir with --auto-ad (auto-ad writes prompt/)"
+        if getattr(args, "keyframes", None) or getattr(args, "script", None):
+            return "cannot use --keyframes/--script with --auto-ad"
+        if getattr(args, "character_reference_dir", None):
+            return ("--character-reference-dir is not used by --auto-ad; "
+                    "product references are managed from --product-url")
+        if getattr(args, "character_reference", None):
+            return ("--character-reference is not used by --auto-ad; "
+                    "product references are managed from --product-url")
+        if getattr(args, "image_1_dir", None):
+            return ("--image-1-dir is managed by --auto-ad "
+                    "(image_start/1.png comes from the verified product image)")
+        if getattr(args, "video_model", "ltx") != "minimax_h3_r2v":
+            return ("--auto-ad requires --video-model minimax_h3_r2v; "
+                    "no other video provider is supported or silently substituted")
+        if getattr(args, "video_mode", "i2v") != "i2v":
+            return "--auto-ad requires --video-mode i2v"
+        if getattr(args, "stage", None) == "image":
+            return "--stage image is not part of --auto-ad"
+        if normalize_stop_after(args.stop_after) not in ("video", "audio", "all"):
+            return "--auto-ad supports --stop-after video|audio|all"
+        if args.scene is not None and not args.resume:
+            return "--scene requires --resume"
+        if args.resume and not args.project:
+            return "--resume requires --project"
+        if getattr(args, "ad_duration", 30) <= 0:
+            return "--ad-duration must be a positive number of seconds"
+        if getattr(args, "ad_clips", None) is not None and not (
+                1 <= args.ad_clips <= 8):
+            return "--ad-clips must be between 1 and 8"
+        return None
+    if getattr(args, "overwrite", False):
+        return "--overwrite only applies to --auto-ad"
     if args.prompt is None and not args.resume and not getattr(args, "keyframes", None) and not getattr(args, "script", None) and not getattr(args, "prompt_dir", None):
         return "the prompt is required unless --resume, --keyframes, --script or --prompt-dir is used"
     continuous = bool(getattr(args, "continuous", False))
@@ -124,6 +169,8 @@ def validate_cli_combination(args) -> str | None:
             return "cannot use --stage with --continuous (use --scene N to regenerate one clip)"
         if getattr(args, "character_reference", None):
             return "--character-reference is not used in --continuous mode"
+        if getattr(args, "character_reference_dir", None):
+            return "--character-reference-dir is not used in --continuous mode"
         if not getattr(args, "image", None):
             return "--continuous requires --image (reference/start image)"
         if getattr(args, "scenes", None) is not None:
@@ -188,13 +235,23 @@ def validate_cli_combination(args) -> str | None:
     if bool(getattr(args, "use_first_frame", False)):
         if not prompt_dir:
             return "--use-first-frame requires --prompt-dir"
-        if getattr(args, "video_model", "ltx") not in ("minimax_h3", "ltx", "ltx_t2v"):
-            return "--use-first-frame is only supported by --video-model minimax_h3/ltx"
+        if getattr(args, "video_model", "ltx") not in (
+                "minimax_h3", "minimax_h3_r2v", "ltx", "ltx_t2v"):
+            return ("--use-first-frame is only supported by --video-model "
+                    "minimax_h3/minimax_h3_r2v/ltx")
     if getattr(args, "image_1_dir", None):
         if not prompt_dir:
             return "--image-1-dir requires --prompt-dir"
-        if getattr(args, "video_model", "ltx") not in ("minimax_h3", "ltx", "ltx_t2v"):
-            return "--image-1-dir is only supported by --video-model minimax_h3/ltx"
+        if getattr(args, "video_model", "ltx") not in (
+                "minimax_h3", "minimax_h3_r2v", "ltx", "ltx_t2v"):
+            return ("--image-1-dir is only supported by --video-model "
+                    "minimax_h3/minimax_h3_r2v/ltx")
+    if getattr(args, "character_reference_dir", None):
+        if not prompt_dir:
+            return "--character-reference-dir requires --prompt-dir"
+        if getattr(args, "video_model", "ltx") != "minimax_h3_r2v":
+            return ("--character-reference-dir is only supported by "
+                    "--video-model minimax_h3_r2v")
     return None
 
 
@@ -333,7 +390,9 @@ def _interrupt_message(stage: str, scene_id: int, completed: list[int],
 
 
 def prepare_prompt_scenes(prompt_dir_arg: str, base_dir: str,
-                          default_duration: float, project: str) -> list[dict]:
+                          default_duration: float, project: str,
+                          narration_by_clip: dict[int, str] | None = None
+                          ) -> list[dict]:
     """Discover prompt files and build one scene per file (verbatim).
 
     Relative directories resolve against the project directory, so
@@ -359,7 +418,8 @@ def prepare_prompt_scenes(prompt_dir_arg: str, base_dir: str,
     else:
         print(f"[Video Prompts] No manifest (Version 1 durations: "
               f"{default_duration:g}s per clip)")
-    scenes = pf.load_prompt_scenes(prompt_dir, default_duration)
+    scenes = pf.load_prompt_scenes(prompt_dir, default_duration,
+                                   narration_by_clip=narration_by_clip)
     return scenes
 
 
@@ -603,9 +663,28 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
         initial_image = pf.discover_initial_image(image_1_dir)
         if initial_image is None:
             print(f"  Initial image: none found in {image_1_dir} "
-                  f"(clip 1 uses T2V)")
+                  f"(clip 1 generates without a guide frame)")
         else:
             print(f"  Initial image: {initial_image}")
+    character_refs = ctx.get("character_refs") or None
+    if character_refs and not getattr(provider, "supports_character_refs",
+                                      False):
+        raise ValueError(
+            f"--character-reference-dir is not supported by video model "
+            f"'{ctx.get('video_model')}'.")
+    if character_refs:
+        print(f"  Character references: {len(character_refs)} shared by "
+              f"every clip ("
+              + ", ".join(os.path.basename(p) for p in character_refs) + ")")
+    product_refs = ctx.get("product_refs") or None
+    if product_refs and not getattr(provider, "supports_product_refs", False):
+        raise ValueError(
+            f"Product references are not supported by video model "
+            f"'{ctx.get('video_model')}'.")
+    if product_refs:
+        print(f"  Product references: {len(product_refs)} shared by every "
+              f"clip (" + ", ".join(os.path.basename(p) for p in product_refs)
+              + ")")
     if motion_clips is not None:
         print(f"  Motion clips: {len(motion_clips)} "
               f"({os.path.basename(os.path.dirname(motion_clips[0]))}/)")
@@ -661,6 +740,18 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
             print(f"  scene {sid}/{len(scenes)}: video "
                   f"(ref={os.path.basename(str(src))}, "
                   f"motion={os.path.basename(motion)}) ...")
+        elif getattr(provider, "provider_id", "") == "minimax_h3_r2v":
+            extra = f", prompt={scene['prompt_file']}" if scene.get("prompt_file") else ""
+            if first_frame is None:
+                guide = "none"
+            elif chain and sid != first_id:
+                guide = "previous clip last frame"
+            else:
+                guide = "initial image"
+            print(f"  scene {sid}/{len(scenes)}: video (r2v, "
+                  f"product_refs={len(product_refs or [])}, "
+                  f"character_refs={len(character_refs or [])}, "
+                  f"guide_frame={guide}{extra}) ...")
         elif not needs_image:
             extra = f", prompt={scene['prompt_file']}" if scene.get("prompt_file") else ""
             print(f"  scene {sid}/{len(scenes)}: video (t2v, no input image{extra}) ...")
@@ -672,7 +763,9 @@ def run_video_stage(ctx: dict, scenes: list[dict], image_paths: dict,
                 input_image=src, width=ctx["target_w"], height=ctx["target_h"],
                 duration=expected, seed=ctx["base_seed"] + 1000 + sid,
                 output_path=tmp, motion_video=(Path(motion) if motion else None),
-                first_frame=first_frame))
+                first_frame=first_frame,
+                character_refs=character_refs,
+                product_refs=product_refs))
         except KeyboardInterrupt:
             _cleanup_tmp(tmp)
             raise StageInterrupted(
@@ -1033,6 +1126,12 @@ def parse_args(argv=None):
     p.add_argument("--character-reference", default=None,
                    help="Optional character reference image reused for every scene "
                         "(passed through to the image provider; provider decides support)")
+    p.add_argument("--character-reference-dir", default=None,
+                   help="Project-local directory of numbered character reference "
+                        "images (1.png, 2.jpg, ...; at most 4) shared by every "
+                        "clip. Requires --prompt-dir and --video-model "
+                        "minimax_h3_r2v; relative paths resolve against "
+                        "projects/<project>/.")
     p.add_argument("--stop-after", default="all",
                    choices=["storyboard", "image", "images", "video", "videos",
                             "audio", "all"],
@@ -1092,7 +1191,8 @@ def parse_args(argv=None):
                    help="Project-local directory with an optional initial "
                         "image for clip 1 (1.png/.jpg/.jpeg/.webp); relative "
                         "paths resolve against projects/<project>/. Clip 1 "
-                        "uses it as First Frame when present, else T2V.")
+                        "uses it as First Frame when present, else T2V "
+                        "(or pure R2V for minimax_h3_r2v).")
     p.add_argument("--continuous", action="store_true",
                    help="Chain mode: one image + one prompt -> Qwen-planned "
                         "continuous clips (last frame chains to next)")
@@ -1105,6 +1205,33 @@ def parse_args(argv=None):
     p.add_argument("--identity-file", default=None,
                    help="Explicit master identity JSON for --continuous "
                         "(skips automatic identity creation)")
+    # Opt-in product-URL -> ad pipeline. These flags are inert unless
+    # --auto-ad is present, so existing commands are unchanged.
+    p.add_argument("--auto-ad", action="store_true",
+                   help="Opt-in: research a product URL, plan a short ad, "
+                        "and generate it with minimax_h3_r2v. Requires "
+                        "--product-url.")
+    p.add_argument("--product-url", default=None,
+                   help="HTTP(S) product page for --auto-ad.")
+    p.add_argument("--ad-duration", type=float, default=30.0,
+                   help="Target ad duration in seconds for --auto-ad "
+                        "(default: 30).")
+    p.add_argument("--ad-style", default="ugc_product_showcase",
+                   help="Creative style for --auto-ad "
+                        "(default: ugc_product_showcase).")
+    p.add_argument("--ad-language", default="en",
+                   help="Ad language for --auto-ad (currently en; default: en).")
+    p.add_argument("--ad-clips", type=int, default=None,
+                   help="Optional clip count for --auto-ad (1..8; default is "
+                        "chosen from --ad-duration and the R2V duration lattice).")
+    p.add_argument("--overwrite", action="store_true",
+                   help="Explicitly replace existing --auto-ad research, "
+                        "prompts and generated clips. Has no effect outside "
+                        "--auto-ad.")
+    p.add_argument("--vision-model", default=None,
+                   help="Ollama vision model used to verify product images "
+                        "for --auto-ad (default: config ollama.vision_model "
+                        "or qwen3-vl:8b).")
     return p.parse_args(argv)
 
 
@@ -1269,6 +1396,471 @@ def run_continuous_command(args, cfg) -> int:
     return 0
 
 
+def _prepare_auto_ad_initial_image(record: dict, image_start_dir: str,
+                                   overwrite: bool) -> str:
+    """Use the first verified product image as the opening guide frame.
+
+    No synthetic scene image is generated here. That is deliberate: the
+    verified product photograph cannot hallucinate a similar product, and
+    the R2V guide-frame slot is separate from the product reference slots.
+    """
+    selected = record.get("selected_images") or []
+    if not selected:
+        raise ValueError("No verified product image is available for the initial frame.")
+    src = selected[0].get("path", "")
+    if not st.valid_image_file(src):
+        raise ValueError(f"Verified product image is missing or invalid: {src}")
+    os.makedirs(image_start_dir, exist_ok=True)
+    dest = os.path.join(image_start_dir, "1.png")
+    if os.path.isfile(dest) and not overwrite:
+        if st.valid_image_file(dest):
+            return dest
+        raise ValueError(
+            f"Existing initial guide frame is invalid: {dest}. "
+            "Use --overwrite to replace it.")
+    tmp = dest + ".tmp"
+    try:
+        shutil.copyfile(src, tmp)
+        if not st.valid_image_file(tmp):
+            raise ValueError(f"Copied initial guide frame failed validation: {tmp}")
+        os.replace(tmp, dest)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return dest
+
+
+def auto_ad_resume_problem(state: dict, stages_planned: list[str],
+                           render_meta: dict, audio_meta: dict, *,
+                           first_clip_path: str | None = None,
+                           probe_size=None) -> str | None:
+    """Reject resume when inputs changed under existing artifacts.
+
+    Pure decision function (probing is injectable) so unit tests can cover
+    every combination. Returns an error message, or None when reuse is safe.
+    """
+    probe = probe_size or ff.probe_video_size
+    stages = state.get("stages") or {}
+    stored = (stages.get("video") or {}).get("render")
+    stored_audio = (stages.get("audio") or {}).get("render")
+    needs_video = "video" in stages_planned or "finalize" in stages_planned
+    needs_audio = "audio" in stages_planned or "finalize" in stages_planned
+    if needs_video:
+        if stored is None:
+            # Projects created before render metadata existed: fall back to
+            # the actual first clip dimensions.
+            if first_clip_path:
+                clip_w, clip_h = probe(first_clip_path)
+                expected = (int(render_meta["width"]), int(render_meta["height"]))
+                if clip_w and clip_h and (clip_w, clip_h) != expected:
+                    return (f"existing auto-ad clips are {clip_w}x{clip_h}, "
+                            f"but this run requests {expected[0]}x{expected[1]}. "
+                            "Use --overwrite (or --stage video --overwrite) "
+                            "to regenerate them.")
+        elif stored != render_meta:
+            return ("existing auto-ad clips were rendered with different "
+                    "--aspect/--resolution settings. Use --overwrite (or "
+                    "--stage video --overwrite) to regenerate them.")
+    if needs_audio:
+        if stored_audio is not None and stored_audio != audio_meta:
+            return ("existing auto-ad narration was generated with a "
+                    "different audio model/voice. Use --overwrite (or "
+                    "--stage audio --overwrite) to regenerate it.")
+    return None
+
+
+def run_auto_ad_command(args, cfg) -> int:
+    """Opt-in product URL -> research -> plan -> Prompt V2 -> R2V ad.
+
+    This is an orchestration layer only: it reuses the existing prompt
+    loader, video/audio/finalize stages, ComfyUI client, R2V provider,
+    state/resume logic and FFmpeg helpers. Existing non-auto-ad commands
+    never enter this function.
+    """
+    product_cfg = cfg.get("product_ad", {}) or {}
+    ollama_cfg = cfg.get("ollama", {}) or {}
+    comfy_cfg = cfg.get("comfyui", {}) or {}
+    tts_cfg = cfg.get("tts", {}) or {}
+    ff_cfg = cfg.get("ffmpeg", {}) or {}
+
+    try:
+        product_url = pr.validate_product_url(args.product_url)
+    except pr.UnsafeUrlError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    language = (args.ad_language or "en").lower()
+    if language not in ("en", "en-us", "en-gb"):
+        print("Error: --ad-language currently supports English (en) only.",
+              file=sys.stderr)
+        return 1
+    language = "en"
+    if args.ad_duration <= 0:
+        print("Error: --ad-duration must be positive.", file=sys.stderr)
+        return 1
+    if args.ad_clips is not None and not (1 <= args.ad_clips <= 8):
+        print("Error: --ad-clips must be between 1 and 8.", file=sys.stderr)
+        return 1
+    if args.character_reference_dir:
+        print("Error: --character-reference-dir is not used by --auto-ad; "
+              "product references come from --product-url.", file=sys.stderr)
+        return 1
+
+    project = (slugify(args.project) if args.project
+               else pr.derive_project_name(product_url))
+    base_dir = os.path.join(APP_DIR, "projects", project)
+    prompt_dir = os.path.join(base_dir, "prompt")
+    source_dir = os.path.join(base_dir, "source")
+    ad_plan_path = os.path.join(prompt_dir, "ad_plan.json")
+    record_path = os.path.join(source_dir, "product.json")
+
+    if not args.overwrite:
+        if os.path.isfile(os.path.join(base_dir, "storyboard.json")):
+            print(f"Error: project {project} already has a storyboard.json "
+                  "from the standard pipeline. Choose a different --project "
+                  "or use --overwrite.", file=sys.stderr)
+            return 1
+        if os.path.isdir(prompt_dir) and not os.path.isfile(ad_plan_path):
+            numbered = [
+                name for name in os.listdir(prompt_dir)
+                if os.path.splitext(name)[1].lower() == ".txt"
+                and re.fullmatch(r"[0-9]+", os.path.splitext(name)[0])
+            ]
+            if numbered:
+                print(f"Error: project {project} already has numbered prompt "
+                      f"files ({', '.join(sorted(numbered)[:5])}). Use "
+                      "--overwrite to replace them explicitly.", file=sys.stderr)
+                return 1
+
+    ollama_url = args.ollama_url or ollama_cfg.get("url", "http://127.0.0.1:11434")
+    model = args.model or ollama_cfg.get("model", "qwen3:8b")
+    vision_model = (args.vision_model
+                    or ollama_cfg.get("vision_model", "qwen3-vl:8b"))
+    planning_timeout = int(ollama_cfg.get("planning_timeout",
+                                          ollama_cfg.get("timeout", 600)))
+    retrieval_timeout = int(product_cfg.get("timeout", 30))
+    vision_timeout = int(product_cfg.get("vision_timeout", 240))
+    require_vision = bool(product_cfg.get("require_vision_verification", True))
+    max_image_bytes = int(product_cfg.get("max_image_bytes", 8_000_000))
+    comfy_url = args.comfy_url or comfy_cfg.get("url", "http://127.0.0.1:8188")
+    audio_model = (args.audio_model if args.audio_model != "edge_tts"
+                   else product_cfg.get("audio_model", "piper_en"))
+    voice = (args.voice or product_cfg.get("voice")
+             or tts_cfg.get("voice", "en-US-AriaNeural"))
+    rate = str(tts_cfg.get("rate", "+0%"))
+    pitch = str(tts_cfg.get("pitch", "+0Hz"))
+    clip_duration = ap.CLIP_DURATION_SECONDS
+    clip_count = (args.ad_clips if args.ad_clips is not None
+                  else ap.choose_clip_count(args.ad_duration, clip_duration))
+    actual_total = ap.quantized_duration_seconds(clip_duration) * clip_count
+
+    try:
+        target_w, target_h = resolve_dimensions(args.aspect, args.resolution)
+        lookup(APP_DIR, "video", "minimax_h3_r2v")
+        lookup(APP_DIR, "audio", audio_model)
+    except (ValueError, UnknownModelError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    print("Auto ad: enabled")
+    print(f"Product URL: {product_url}")
+    print(f"Project: {project}")
+    print(f"Planning model: {model} (text-only)")
+    print(f"Vision verifier: {vision_model if require_vision else 'disabled'}")
+    print(f"Video model: minimax_h3_r2v (required)")
+    print(f"Ad target: {args.ad_duration:g}s, {clip_count} clips x "
+          f"{clip_duration:g}s (R2V quantized total {actual_total:.3f}s)")
+    print(f"Aspect: {args.aspect}; resolution: {args.resolution}p; "
+          f"target {target_w}x{target_h}")
+    print(f"ComfyUI: {comfy_url}")
+    print(f"Ollama: {ollama_url}")
+    print(f"Audio: {audio_model} / {voice}")
+
+    plan = None
+    record = None
+    analysis = None
+    reuse_plan = os.path.isfile(ad_plan_path) and not args.overwrite
+    if reuse_plan:
+        try:
+            plan = ap.load_ad_plan(base_dir)
+            record = pr.load_json(record_path)
+            stored_url = record.get("source_url")
+            try:
+                stored_normalized = pr.validate_product_url(stored_url)
+            except pr.UnsafeUrlError:
+                stored_normalized = stored_url
+            if stored_normalized != product_url:
+                raise pr.ProductResearchError(
+                    f"Existing auto-ad plan belongs to a different product "
+                    f"URL ({stored_url}); use --overwrite.")
+            if (abs(float(plan.get("target_duration_seconds", 0))
+                    - float(args.ad_duration)) > 0.01
+                    or plan.get("style") != args.ad_style
+                    or plan.get("language") != language
+                    or int(plan.get("clip_count", 0)) != clip_count):
+                raise ap.AdPlanError(
+                    "Existing auto-ad plan was generated for different "
+                    "--ad-duration/--ad-style/--ad-language/--ad-clips "
+                    "settings; use --overwrite to replan.")
+            for image in record.get("selected_images") or []:
+                if not st.valid_image_file(image.get("path", "")):
+                    raise pr.ProductResearchError(
+                        f"Verified product image is missing: {image.get('path')}. "
+                        "Use --overwrite to re-download and verify.")
+            print(f"Reusing existing research and ad plan: {ad_plan_path}")
+            ap.write_prompt_v2(base_dir, record, plan, overwrite=False,
+                               voice=voice)
+        except (pr.ProductResearchError, ap.AdPlanError, OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        try:
+            ol.check_model_available(ollama_url, model)
+            if require_vision:
+                ol.check_model_available(ollama_url, vision_model)
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        try:
+            print("[Auto ad] Retrieving and verifying product data")
+            record = pr.research_product(
+                product_url, project_dir=base_dir, overwrite=args.overwrite,
+                timeout=retrieval_timeout, vision_model=vision_model,
+                ollama_url=ollama_url, vision_timeout=vision_timeout,
+                require_vision=require_vision, max_bytes=max_image_bytes)
+            print(f"[Auto ad] Product: {record.get('title')}")
+            print(f"[Auto ad] Verified product images: "
+                  f"{len(record.get('selected_images') or [])}")
+            print("[Auto ad] Analyzing product and planning grounded ad")
+            analysis = ap.analyze_product(
+                record, model=model, base_url=ollama_url,
+                timeout=planning_timeout)
+            pr.save_json(os.path.join(source_dir, "ad_analysis.json"), analysis)
+            plan = ap.plan_ad(
+                record, analysis, model=model,
+                target_duration=args.ad_duration, style=args.ad_style,
+                language=language, clip_count=clip_count,
+                clip_duration=clip_duration, base_url=ollama_url,
+                timeout=planning_timeout)
+            ap.write_prompt_v2(base_dir, record, plan,
+                               overwrite=args.overwrite, voice=voice)
+            print(f"[Auto ad] Wrote Prompt V2 and manifest: {prompt_dir}")
+        except (pr.ProductResearchError, ap.AdPlanError, RuntimeError,
+                OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if plan is None or record is None:
+        print("Error: auto-ad plan or product record is unavailable.",
+              file=sys.stderr)
+        return 1
+    try:
+        narration = ap.narration_by_clip(plan)
+        scenes = prepare_prompt_scenes(
+            "prompt", base_dir, float(plan.get("clip_duration_seconds",
+                                               clip_duration)),
+            project, narration_by_clip=narration)
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if len(scenes) != int(plan.get("clip_count", len(scenes))):
+        print("Error: Prompt V2 clip count does not match the ad plan.",
+              file=sys.stderr)
+        return 1
+    for scene in scenes:
+        if not scene.get("narration"):
+            print(f"Error: ad plan has no spoken text for clip {scene['id']}; "
+                  "refusing to claim a spoken ad.", file=sys.stderr)
+            return 1
+
+    base_seed = (args.seed if args.seed is not None
+                 else random.randint(0, 2**31 - 1))
+    state_path = os.path.join(base_dir, "state.json")
+    if args.overwrite:
+        state = st.new_state(project)
+    else:
+        state = st.load_state(state_path, project)
+        if state.get("base_seed") is not None:
+            base_seed = int(state["base_seed"])
+    state["base_seed"] = base_seed
+    state["scene_ids"] = [int(s["id"]) for s in scenes]
+    st.save_state(state_path, state)
+
+    img_dir = os.path.join(base_dir, "images")
+    vid_dir = os.path.join(base_dir, "videos")
+    aud_dir = os.path.join(base_dir, "audio")
+    mux_dir = os.path.join(base_dir, "muxed")
+    for directory in (img_dir, vid_dir, aud_dir, mux_dir):
+        os.makedirs(directory, exist_ok=True)
+    image_start_dir = os.path.join(base_dir, "image_start")
+    final_path = os.path.join(base_dir, "final.mp4")
+    product_refs = [image.get("path") for image in record.get("selected_images") or []]
+    if not product_refs:
+        print("Error: no verified product references are available.",
+              file=sys.stderr)
+        return 1
+    if len(product_refs) > 3:
+        product_refs = product_refs[:3]
+
+    stop_after = normalize_stop_after(args.stop_after)
+    if args.stage is not None:
+        stages_planned = [args.stage]
+    elif args.overwrite:
+        stages_planned = ["video", "audio", "finalize"]
+    else:
+        stages_planned, problems = plan_resume_stages(
+            scenes=scenes, img_dir=img_dir, vid_dir=vid_dir,
+            aud_dir=aud_dir, final_path=final_path,
+            default_duration=float(plan.get("clip_duration_seconds",
+                                            clip_duration)),
+            stage=None, only_scene=args.scene, video_needs_images=False,
+            check_video_duration=True)
+        if problems:
+            print("Error: " + "\nError: ".join(problems), file=sys.stderr)
+            return 1
+    order = ["video", "audio", "finalize"]
+    if stop_after != "all" and args.stage is None:
+        stages_planned = [s for s in stages_planned
+                          if order.index(s) <= order.index(stop_after)]
+    if not stages_planned:
+        print(f"Auto ad project {project} is already complete through "
+              f"'{stop_after}'. Nothing to do.")
+        return 0
+
+    # A changed aspect/resolution/voice is an input change. Reusing old
+    # clips or narration silently would violate the resume contract.
+    render_meta = {
+        "width": int(target_w), "height": int(target_h),
+        "aspect": args.aspect, "resolution": args.resolution,
+        "video_model": "minimax_h3_r2v",
+    }
+    audio_meta = {"model": audio_model, "voice": voice}
+    if not args.overwrite:
+        first_clip = None
+        scene_ids_for_check = state.get("scene_ids") or []
+        if scene_ids_for_check:
+            candidate = scene_path(vid_dir, int(scene_ids_for_check[0]), "mp4")
+            if os.path.isfile(candidate):
+                first_clip = candidate
+        problem = auto_ad_resume_problem(
+            state, stages_planned, render_meta, audio_meta,
+            first_clip_path=first_clip)
+        if problem:
+            print(f"Error: {problem}", file=sys.stderr)
+            return 1
+    state["stages"].setdefault("video", {})["render"] = render_meta
+    state["stages"].setdefault("audio", {})["render"] = audio_meta
+    st.save_state(state_path, state)
+
+    client = None
+    video_provider = None
+    audio_provider = None
+    ffmpeg_exe = None
+    try:
+        if "video" in stages_planned:
+            client = ComfyClient(
+                comfy_url,
+                timeout=int(comfy_cfg.get("timeout", 60)),
+                poll_interval=float(comfy_cfg.get("poll_interval", 2.0)),
+                queue_timeout=int(comfy_cfg.get("queue_timeout", 5400)))
+            client.check_reachable()
+            video_provider = create_provider(
+                "video", APP_DIR, "minimax_h3_r2v", client=client)
+            ffmpeg_exe = ff.check_ffmpeg(ff_cfg.get("executable", "ffmpeg"))
+        if "audio" in stages_planned:
+            audio_provider = create_provider("audio", APP_DIR, audio_model)
+        if "finalize" in stages_planned and ffmpeg_exe is None:
+            ffmpeg_exe = ff.check_ffmpeg(ff_cfg.get("executable", "ffmpeg"))
+    except (RuntimeError, UnknownModelError, Exception) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    initial_image = None
+    if "video" in stages_planned:
+        try:
+            initial_image = _prepare_auto_ad_initial_image(
+                record, image_start_dir, args.overwrite)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Initial guide frame: {initial_image} (verified product image)")
+
+    ctx = {
+        "project": project, "base_dir": base_dir,
+        "img_dir": img_dir, "vid_dir": vid_dir,
+        "aud_dir": aud_dir, "mux_dir": mux_dir, "final_path": final_path,
+        "state_path": state_path, "state": state,
+        "video_provider": video_provider, "audio_provider": audio_provider,
+        "image_model": args.image_model, "video_model": args.video_model,
+        "target_w": target_w, "target_h": target_h, "base_seed": base_seed,
+        "img_neg": "", "vid_neg": "",
+        "voice": voice, "rate": rate, "pitch": pitch,
+        "default_duration": float(plan.get("clip_duration_seconds",
+                                           clip_duration)),
+        "char_ref": None, "subject": None, "ffmpeg_exe": ffmpeg_exe,
+        "reference_image": None, "motion_clips": None, "motion_dir": None,
+        "prompt_mode": True, "first_frame_chain": True,
+        "image_1_dir": image_start_dir,
+        "character_refs": None, "product_refs": product_refs,
+    }
+
+    try:
+        if "video" in stages_planned:
+            print(f"[Auto ad] Generating {len(scenes)} R2V clip(s) with "
+                  f"{len(product_refs)} product reference(s) and chained last frames")
+            run_video_stage(ctx, scenes, {}, only_scene=args.scene,
+                            force_all=args.overwrite)
+            if args.scene is not None:
+                print(f"Clip {args.scene} regenerated. Downstream clips may "
+                      "need regeneration; final.mp4 was not rebuilt.")
+                return 0
+        if "audio" in stages_planned:
+            run_audio_stage(ctx, scenes, only_scene=args.scene,
+                            force_all=args.overwrite)
+        if "finalize" in stages_planned:
+            ids = [int(s["id"]) for s in scenes]
+            full_clips = {sid: scene_path(vid_dir, sid, "mp4") for sid in ids}
+            full_audios = {sid: scene_path(aud_dir, sid, "mp3") for sid in ids}
+            # R2V quantizes 5.0s to 124 frames (5.1667s). Pad short TTS
+            # narration to that exact duration so the final ad keeps the
+            # planned ~31s length instead of shrinking to speech length.
+            fit_duration = ap.quantized_duration_seconds(
+                float(plan.get("clip_duration_seconds", clip_duration)))
+            for sid in ids:
+                audio_path = full_audios[sid]
+                if not st.valid_audio_file(audio_path):
+                    raise ValueError(
+                        f"Cannot finalize: narration for scene {sid} "
+                        "missing or invalid.")
+                ff.fit_audio_duration(audio_path, fit_duration,
+                                      executable=ffmpeg_exe)
+            final = run_finalize_stage(ctx, scenes, full_clips, full_audios)
+            print(f"Final ad: {final}")
+        elif stop_after == "video":
+            print("Stopped after video as requested (--stop-after video). "
+                  "Audio was not generated and final.mp4 was not created.")
+        elif stop_after == "audio":
+            print("Stopped after audio as requested (--stop-after audio). "
+                  "final.mp4 was not created.")
+        return 0
+    except StageInterrupted as exc:
+        print(exc.message, file=sys.stderr)
+        return 130
+    except ProviderError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        traceback.print_exception(exc.__cause__ or exc)
+        return 1
+    except (RuntimeError, ValueError, OSError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Interrupted. Re-run the same command to resume.", file=sys.stderr)
+        return 130
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     combo_error = validate_cli_combination(args)
@@ -1276,6 +1868,8 @@ def main(argv=None) -> int:
         print(f"Error: {combo_error}", file=sys.stderr)
         return 1
     cfg = load_config(args.config)
+    if bool(getattr(args, "auto_ad", False)):
+        return run_auto_ad_command(args, cfg)
     if bool(getattr(args, "continuous", False)):
         return run_continuous_command(args, cfg)
 
@@ -1392,6 +1986,21 @@ def main(argv=None) -> int:
             print(f"Error: --image-1-dir not found: {image_1_dir_abs}.",
                   file=sys.stderr)
             return 1
+    character_refs = None
+    if getattr(args, "character_reference_dir", None):
+        # Discovery only; uploads stay lazy inside the provider so resumed
+        # or skipped clips never touch ComfyUI for unused references.
+        char_ref_dir = (args.character_reference_dir
+                        if os.path.isabs(args.character_reference_dir)
+                        else os.path.join(base_dir,
+                                          args.character_reference_dir))
+        try:
+            character_refs = pf.discover_character_refs(char_ref_dir)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print(f"Character references: {len(character_refs)} "
+              f"({', '.join(os.path.basename(p) for p in character_refs)})")
     if resume_mode:
         if prompt_mode:
             # Prompt-file resume: scenes come from prompt/*.txt verbatim.
@@ -1424,7 +2033,7 @@ def main(argv=None) -> int:
             default_duration=default_duration, stage=args.stage,
             only_scene=args.scene,
             video_needs_images=not (wan_motion and reference_image) and not is_t2v
-            and vid_entry.get("provider") != "minimax_h3"
+            and vid_entry.get("provider") not in ("minimax_h3", "minimax_h3_r2v")
             and not (bool(prompt_mode) and (
                 vid_entry.get("provider") == "ltx_t2v"
                 or (vid_entry.get("provider") == "ltx"
@@ -1522,6 +2131,8 @@ def main(argv=None) -> int:
         "motion_dir": args.motion_dir, "prompt_mode": prompt_mode,
         "first_frame_chain": bool(getattr(args, "use_first_frame", False)),
         "image_1_dir": image_1_dir_abs,
+        "character_refs": character_refs,
+        "product_refs": None,
     }
 
     try:
