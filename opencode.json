@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "shell": "C:\\Windows\\System32\\cmd.exe",
+  "provider": {
+    "qoder": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qoder AI",
+      "options": {
+        "baseURL": "https://qoder.ai", 
+        "apiKey": "pt-PV8hb3QsL30DKsZjq0KvneuN_01a19055-e5f4-7cc6-a887-8a59799ebe9f"
+      },
+      "models": {
+        "DeepSeek-V4.1-Flash-1017": { "name": "Qoder DeepSeek V4.1 Flash" },
+        "qwen3.8-Flash": { "name": "Qoder 3.8 Flash" }
+      }
+    }
+  }
+}

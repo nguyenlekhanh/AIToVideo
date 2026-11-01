@@ -416,6 +416,19 @@ class PlanValidationTest(unittest.TestCase):
             self.assertEqual(clip["product_reference_ids"],
                              ["img_1", "img_2", "img_3"])
 
+    def test_image_prompt_id_is_replaced_with_a_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = base_plan()
+            plan["clips"][0]["image_prompt"] = "img_2"
+            result = ap.validate_plan(
+                plan, record, target_duration=15,
+                style="ugc_product_showcase", language="en",
+                clip_count=3, clip_duration=5.0, model="qwen3:8b")
+        self.assertTrue(result["clips"][0]["image_prompt"].startswith(
+            "Opening frame:"))
+        self.assertIn("Test Widget", result["clips"][0]["image_prompt"])
+
     def test_unknown_feature_id_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             record = make_record(tmp)
@@ -610,6 +623,19 @@ class ChatJsonTest(unittest.TestCase):
                 ol.chat_json("s", "u", model="m")
         self.assertIn("truncated", str(ctx.exception))
 
+    def test_schema_is_forwarded_as_structured_output(self):
+        schema = {"type": "object", "properties": {"a": {"type": "integer"}},
+                  "required": ["a"]}
+        with patch.object(ol, "_post",
+                          return_value={"message": {"content": '{"a": 1}'}}) as post:
+            ol.chat_json("s", "u", model="m", schema=schema)
+        payload = post.call_args[0][1]
+        self.assertEqual(payload["format"], schema)
+        with patch.object(ol, "_post",
+                          return_value={"message": {"content": '{"a": 1}'}}) as post:
+            ol.chat_json("s", "u", model="m")
+        self.assertEqual(post.call_args[0][1]["format"], "json")
+
     def test_thinking_fallback_is_json_only(self):
         with patch.object(ol, "_post",
                           return_value={"message": {"content": "",
@@ -668,6 +694,424 @@ class AutoAdCliTest(unittest.TestCase):
     def test_manual_initial_image_dir_rejected(self):
         args = self._args("--image-1-dir", "starts")
         self.assertIn("image-1-dir", main.validate_cli_combination(args))
+
+
+class StyleEnergyValidationTest(unittest.TestCase):
+    URL = "https://shop.example.com/p/1"
+
+    def _args(self, *extra):
+        return main.parse_args([
+            "--auto-ad", "--product-url", self.URL,
+            "--video-model", "minimax_h3_r2v", *extra])
+
+    def test_cli_defaults(self):
+        args = self._args()
+        self.assertEqual(args.ad_style, "hybrid_ugc_cinematic")
+        self.assertEqual(args.ad_energy, "viral")
+        self.assertIsNone(main.validate_cli_combination(args))
+
+    def test_every_style_energy_pair_is_valid(self):
+        self.assertEqual(len(ap.AD_STYLES), 4)
+        self.assertEqual(len(ap.AD_ENERGIES), 3)
+        for style in ap.AD_STYLES:
+            for energy in ap.AD_ENERGIES:
+                with self.subTest(style=style, energy=energy):
+                    self.assertEqual(
+                        ap.validate_style_energy(style, energy),
+                        (style, energy))
+                    args = self._args("--ad-style", style,
+                                      "--ad-energy", energy)
+                    self.assertIsNone(main.validate_cli_combination(args))
+
+    def test_invalid_style_rejected_by_cli(self):
+        with self.assertRaises(SystemExit):
+            self._args("--ad-style", "corporate")
+
+    def test_invalid_energy_rejected_by_cli(self):
+        with self.assertRaises(SystemExit):
+            self._args("--ad-energy", "extreme")
+
+    def test_combination_validator_rejects_bad_values(self):
+        args = self._args()
+        args.ad_style = "corporate"
+        self.assertIn("ad-style", main.validate_cli_combination(args))
+        args.ad_style = "hybrid_ugc_cinematic"
+        args.ad_energy = "extreme"
+        self.assertIn("ad-energy", main.validate_cli_combination(args))
+
+    def test_invalid_values_fail_before_ollama(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            analysis = {
+                "audience": "Cat owners", "problem": "Messy trimming",
+                "desired_outcome": "Clean trimming",
+                "verified_benefits": [{"text": "Adjustable sizes",
+                                       "feature_ids": ["f1"]}],
+                "objections": [], "recommended_angle": "Show the sizes",
+                "claims_to_avoid": [],
+            }
+            with patch.object(ap.ol, "chat_json") as chat:
+                with self.assertRaises(ap.AdPlanError):
+                    ap.plan_ad(record, analysis, model="m",
+                               style="corporate", energy="viral")
+                chat.assert_not_called()
+            with patch.object(ap.ol, "chat_json") as chat:
+                with self.assertRaises(ap.AdPlanError):
+                    ap.analyze_product(record, model="m",
+                                       style="viral_ugc", energy="extreme")
+                chat.assert_not_called()
+
+    def test_creative_brief_reaches_both_ollama_stages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            analysis = {
+                "audience": "Cat owners", "problem": "Messy trimming",
+                "desired_outcome": "Clean trimming",
+                "verified_benefits": [{"text": "Adjustable sizes",
+                                       "feature_ids": ["f1"]}],
+                "objections": [], "recommended_angle": "Show the sizes",
+                "claims_to_avoid": [],
+            }
+            with patch.object(ap.ol, "chat_json",
+                              side_effect=RuntimeError("stop")) as chat:
+                with self.assertRaises(ap.AdPlanError):
+                    ap.analyze_product(record, model="m",
+                                       style="premium_commercial",
+                                       energy="premium")
+                analysis_user = chat.call_args[0][1]
+                self.assertIn("AD STYLE: premium_commercial", analysis_user)
+                self.assertIn("AD ENERGY: premium", analysis_user)
+            with patch.object(ap.ol, "chat_json",
+                              side_effect=RuntimeError("stop")) as chat:
+                with self.assertRaises(ap.AdPlanError):
+                    ap.plan_ad(record, analysis, model="m",
+                               style="storytelling", energy="natural")
+                plan_user = chat.call_args[0][1]
+                self.assertIn("AD STYLE: storytelling", plan_user)
+                self.assertIn("AD ENERGY: natural", plan_user)
+                self.assertIn("Required shot mix:", plan_user)
+
+
+def styled_plan(style, energy, shots=None, roles=None):
+    plan = base_plan()
+    if roles:
+        for clip, role in zip(plan["clips"], roles):
+            clip["role"] = role
+    if shots:
+        for clip, shot in zip(plan["clips"], shots):
+            clip["shot_type"] = shot
+    for clip in plan["clips"]:
+        clip["camera"] = "Slow dolly in, product centred, shallow depth of field."
+    plan["style"] = style
+    plan["ad_style"] = style
+    plan["ad_energy"] = energy
+    plan["style_rationale"] = "This plan expresses the selected style."
+    plan["energy_rationale"] = "This plan expresses the selected energy."
+    plan["clip_count"] = len(plan["clips"])
+    plan["clip_duration_seconds"] = 5.0
+    return plan
+
+
+class PlanStyleTest(unittest.TestCase):
+    def test_new_style_plan_serialises_style_energy_and_rationales(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = ap.validate_plan(
+                styled_plan("hybrid_ugc_cinematic", "viral",
+                            shots=["human_ugc", "product_showcase", "hybrid"]),
+                record, target_duration=15, style="hybrid_ugc_cinematic",
+                energy="viral", language="en", clip_count=3,
+                clip_duration=5.0, model="qwen3:8b")
+        self.assertEqual(plan["ad_style"], "hybrid_ugc_cinematic")
+        self.assertEqual(plan["ad_energy"], "viral")
+        self.assertEqual(plan["style"], "hybrid_ugc_cinematic")
+        self.assertTrue(plan["style_rationale"])
+        self.assertTrue(plan["energy_rationale"])
+        self.assertEqual([c["shot_type"] for c in plan["clips"]],
+                         ["human_ugc", "product_showcase", "hybrid"])
+        self.assertTrue(all(c["camera"] for c in plan["clips"]))
+
+    def test_hybrid_rejects_all_talking_head(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            with self.assertRaises(ap.AdPlanError) as ctx:
+                ap.validate_plan(
+                    styled_plan("hybrid_ugc_cinematic", "viral",
+                                shots=["human_ugc"] * 3),
+                    record, target_duration=15,
+                    style="hybrid_ugc_cinematic", energy="viral",
+                    language="en", clip_count=3, clip_duration=5.0,
+                    model="qwen3:8b")
+        self.assertIn("human UGC", str(ctx.exception))
+
+    def test_hybrid_rejects_all_product_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            with self.assertRaises(ap.AdPlanError):
+                ap.validate_plan(
+                    styled_plan("hybrid_ugc_cinematic", "viral",
+                                shots=["product_showcase"] * 3),
+                    record, target_duration=15,
+                    style="hybrid_ugc_cinematic", energy="viral",
+                    language="en", clip_count=3, clip_duration=5.0,
+                    model="qwen3:8b")
+
+    def test_viral_requires_a_creator_shot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            with self.assertRaises(ap.AdPlanError):
+                ap.validate_plan(
+                    styled_plan("viral_ugc", "viral",
+                                shots=["product_showcase"] * 3),
+                    record, target_duration=15, style="viral_ugc",
+                    energy="viral", language="en", clip_count=3,
+                    clip_duration=5.0, model="qwen3:8b")
+
+    def test_premium_commercial_stays_product_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            with self.assertRaises(ap.AdPlanError):
+                ap.validate_plan(
+                    styled_plan("premium_commercial", "premium",
+                                shots=["human_ugc"] * 3),
+                    record, target_duration=15,
+                    style="premium_commercial", energy="premium",
+                    language="en", clip_count=3, clip_duration=5.0,
+                    model="qwen3:8b")
+
+    def test_storytelling_requires_problem_and_cta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            with self.assertRaises(ap.AdPlanError):
+                ap.validate_plan(
+                    styled_plan("storytelling", "natural",
+                                roles=["feature", "demo", "benefit"]),
+                    record, target_duration=15, style="storytelling",
+                    energy="natural", language="en", clip_count=3,
+                    clip_duration=5.0, model="qwen3:8b")
+
+    def test_missing_shot_type_rejected_for_new_styles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = styled_plan("viral_ugc", "viral",
+                               shots=["human_ugc", "product_showcase",
+                                      "hybrid"])
+            del plan["clips"][0]["shot_type"]
+            with self.assertRaises(ap.AdPlanError):
+                ap.validate_plan(
+                    plan, record, target_duration=15, style="viral_ugc",
+                    energy="viral", language="en", clip_count=3,
+                    clip_duration=5.0, model="qwen3:8b")
+
+    def test_product_to_human_jump_rejected_for_new_plans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = styled_plan("hybrid_ugc_cinematic", "viral",
+                               shots=["human_ugc", "product_showcase",
+                                      "human_ugc"])
+            with self.assertRaises(ap.AdPlanError) as ctx:
+                ap.validate_plan(
+                    plan, record, target_duration=15,
+                    style="hybrid_ugc_cinematic", energy="viral",
+                    language="en", clip_count=3, clip_duration=5.0,
+                    model="qwen3:8b", strict_continuity=True)
+            self.assertIn("bridging", str(ctx.exception))
+            # Existing rendered plans must still load for resume.
+            ap.validate_plan(
+                plan, record, target_duration=15,
+                style="hybrid_ugc_cinematic", energy="viral",
+                language="en", clip_count=3, clip_duration=5.0,
+                model="qwen3:8b")
+
+    def test_hybrid_bridge_after_product_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = styled_plan("hybrid_ugc_cinematic", "viral",
+                               shots=["human_ugc", "product_showcase",
+                                      "hybrid"])
+            result = ap.validate_plan(
+                plan, record, target_duration=15,
+                style="hybrid_ugc_cinematic", energy="viral",
+                language="en", clip_count=3, clip_duration=5.0,
+                model="qwen3:8b", strict_continuity=True)
+        self.assertEqual([c["shot_type"] for c in result["clips"]],
+                         ["human_ugc", "product_showcase", "hybrid"])
+
+    def test_retry_feedback_lists_valid_roles_and_shot_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            bad = styled_plan("hybrid_ugc_cinematic", "viral",
+                              shots=["human_ugc", "product_showcase",
+                                     "hybrid"])
+            bad["clips"][0]["role"] = "desired_outcome"
+            good = styled_plan("hybrid_ugc_cinematic", "viral",
+                               shots=["human_ugc", "product_showcase",
+                                      "hybrid"])
+            with patch.object(ap.ol, "chat_json",
+                              side_effect=[bad, good]) as chat:
+                plan = ap.plan_ad(record, {}, model="m",
+                                  target_duration=15,
+                                  style="hybrid_ugc_cinematic",
+                                  energy="viral", clip_count=3,
+                                  clip_duration=5.0)
+        self.assertEqual(plan["ad_style"], "hybrid_ugc_cinematic")
+        second_prompt = chat.call_args_list[1][0][1]
+        self.assertIn("role MUST be one of", second_prompt)
+        self.assertIn("desired_outcome", second_prompt)
+        self.assertIn("shot_type MUST be one of", second_prompt)
+        self.assertIn("Required shot mix:", second_prompt)
+
+    def test_prompt_text_differs_across_styles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            refs = record["selected_images"]
+            prompts = {}
+            for style in ap.AD_STYLES:
+                plan = styled_plan(style, "viral",
+                                   shots=["human_ugc", "product_showcase",
+                                          "hybrid"])
+                prompts[style] = ap._build_clip_prompt(
+                    plan, plan["clips"][0], record, refs, 3)
+            self.assertEqual(len(set(prompts.values())), 4)
+            self.assertIn("HYBRID UGC CINEMATIC", prompts["hybrid_ugc_cinematic"])
+            self.assertIn("PREMIUM COMMERCIAL", prompts["premium_commercial"])
+            self.assertIn("premium commercial cinematography",
+                          prompts["premium_commercial"])
+            self.assertIn("handheld UGC review", prompts["viral_ugc"])
+
+    def test_prompt_text_differs_across_energies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            refs = record["selected_images"]
+            prompts = {}
+            for energy in ap.AD_ENERGIES:
+                plan = styled_plan("hybrid_ugc_cinematic", energy,
+                                   shots=["human_ugc", "product_showcase",
+                                          "hybrid"])
+                prompts[energy] = ap._build_clip_prompt(
+                    plan, plan["clips"][0], record, refs, 3)
+            self.assertEqual(len(set(prompts.values())), 3)
+            self.assertIn("Fast pacing", prompts["viral"])
+            self.assertIn("conversational pacing", prompts["natural"])
+            self.assertIn("Deliberate pacing", prompts["premium"])
+
+    def test_prompt_includes_shot_camera_balance_and_audio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = styled_plan("hybrid_ugc_cinematic", "viral",
+                               shots=["human_ugc", "product_showcase",
+                                      "hybrid"])
+            prompt = ap._build_clip_prompt(
+                plan, plan["clips"][1], record, record["selected_images"], 3)
+        self.assertIn("Shot type: product_showcase", prompt)
+        self.assertIn("Camera: Slow dolly in", prompt)
+        self.assertIn("Cinematic product-only beat", prompt)
+        self.assertIn("AUDIO / VOICE-OVER:", prompt)
+        self.assertIn("no lip-sync", prompt)
+        self.assertIn("ENERGY (viral)", prompt)
+
+    def test_fingerprint_changes_with_style_and_energy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            base = styled_plan("hybrid_ugc_cinematic", "viral",
+                               shots=["human_ugc", "product_showcase",
+                                      "hybrid"])
+            other_style = styled_plan("premium_commercial", "viral",
+                                      shots=["human_ugc", "product_showcase",
+                                             "hybrid"])
+            other_energy = styled_plan("hybrid_ugc_cinematic", "premium",
+                                       shots=["human_ugc", "product_showcase",
+                                              "hybrid"])
+            fp_base = ap.plan_fingerprint(base, record)
+            self.assertNotEqual(fp_base, ap.plan_fingerprint(other_style,
+                                                             record))
+            self.assertNotEqual(fp_base, ap.plan_fingerprint(other_energy,
+                                                             record))
+
+    def test_prompt_files_are_written_with_selected_style(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = styled_plan("storytelling", "natural",
+                               shots=["human_ugc", "product_showcase",
+                                      "hybrid"])
+            result = ap.write_prompt_v2(tmp, record, plan, overwrite=True)
+            with open(os.path.join(tmp, "prompt", "1.txt"),
+                      encoding="utf-8") as f:
+                text = f.read()
+            ad_plan = json.load(open(result["ad_plan_path"],
+                                     encoding="utf-8"))
+        self.assertIn("STORYTELLING", text)
+        self.assertIn("ENERGY (natural)", text)
+        self.assertEqual(ad_plan["ad_style"], "storytelling")
+        self.assertEqual(ad_plan["ad_energy"], "natural")
+        self.assertEqual(ad_plan["plan_fingerprint"],
+                         ap.plan_fingerprint(plan, record))
+
+
+class PlanConfigResumeTest(unittest.TestCase):
+    BASE = {"ad_style": "hybrid_ugc_cinematic", "ad_energy": "viral",
+            "target_duration_seconds": 30.0, "language": "en",
+            "clip_count": 6}
+
+    def _problem(self, plan):
+        return main.plan_config_problem(
+            plan, target_duration=30.0, style="hybrid_ugc_cinematic",
+            energy="viral", language="en", clip_count=6)
+
+    def test_matching_plan_is_reused(self):
+        self.assertIsNone(self._problem(dict(self.BASE)))
+
+    def test_changed_style_is_rejected(self):
+        problem = self._problem(dict(self.BASE, ad_style="viral_ugc"))
+        self.assertIn("style", problem)
+
+    def test_changed_energy_is_rejected(self):
+        problem = self._problem(dict(self.BASE, ad_energy="premium"))
+        self.assertIn("energy", problem)
+
+    def test_legacy_plan_without_energy_is_rejected(self):
+        legacy = {"style": "ugc_product_showcase",
+                  "target_duration_seconds": 30.0, "language": "en",
+                  "clip_count": 6}
+        problem = self._problem(legacy)
+        self.assertIn("ugc_product_showcase", problem)
+        self.assertIn("(none)", problem)
+        self.assertIn("--overwrite", problem)
+
+    def test_changed_duration_language_or_count_is_rejected(self):
+        self.assertIn("duration", self._problem(dict(self.BASE,
+                                                     target_duration_seconds=15.0)))
+        self.assertIn("language", self._problem(dict(self.BASE,
+                                                     language="vi")))
+        self.assertIn("clip count", self._problem(dict(self.BASE,
+                                                       clip_count=3)))
+
+
+class AutoAdBackwardCompatibilityTest(unittest.TestCase):
+    def test_normal_pipeline_args_are_unchanged(self):
+        args = main.parse_args(["a cinematic shot of a city"])
+        self.assertFalse(args.auto_ad)
+        self.assertIsNone(main.validate_cli_combination(args))
+        self.assertEqual(args.video_model, "ltx")
+        self.assertEqual(args.aspect, "16:9")
+
+    def test_ad_flags_are_inert_without_auto_ad(self):
+        args = main.parse_args(["a cinematic shot of a city",
+                                "--ad-style", "premium_commercial",
+                                "--ad-energy", "premium"])
+        self.assertFalse(args.auto_ad)
+        self.assertIsNone(main.validate_cli_combination(args))
+
+    def test_legacy_plan_still_validates_without_new_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            record = make_record(tmp)
+            plan = ap.validate_plan(
+                base_plan(), record, target_duration=15,
+                style="ugc_product_showcase", language="en", clip_count=3,
+                clip_duration=5.0, model="qwen3:8b")
+        self.assertEqual(plan["ad_style"], "ugc_product_showcase")
+        self.assertIn(plan["ad_energy"], ap.AD_ENERGIES)
+        self.assertTrue(all(c["shot_type"] for c in plan["clips"]))
 
 
 if __name__ == "__main__":

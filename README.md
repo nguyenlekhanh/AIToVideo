@@ -48,13 +48,19 @@ existing image/video/audio/finalize stages.
 python ai_video/main.py --project potaroma_ad --auto-ad `
   --product-url "https://shop.tiktok.com/us/pdp/..." `
   --video-model minimax_h3_r2v `
-  --ad-duration 30 --ad-clips 6 --ad-style ugc_product_showcase `
+  --ad-duration 30 --ad-clips 6 `
+  --ad-style hybrid_ugc_cinematic --ad-energy viral `
   --ad-language en --resolution 480 --aspect 9:16 --stop-after all
 ```
 
 - `--product-url` is required and configurable; there is no hardcoded product.
-- `--ad-duration` defaults to `30`; `--ad-style` defaults to
-  `ugc_product_showcase`; `--ad-language` defaults to `en`.
+- `--ad-duration` defaults to `30`; `--ad-language` defaults to `en`.
+- `--ad-style` (default `hybrid_ugc_cinematic`) selects the advertising
+  format: `hybrid_ugc_cinematic`, `viral_ugc`, `premium_commercial`,
+  `storytelling`.
+- `--ad-energy` (default `viral`) selects pacing/delivery: `viral`,
+  `natural`, `premium`. Style and energy are independent and both are
+  passed to Ollama; they change the plan and the generated prompts.
 - `--ad-clips` is optional. Without it the clip count is chosen from the
   target duration and the R2V 5-second duration lattice (6 clips -> 31.0s).
 - Only `minimax_h3_r2v` is accepted for `--auto-ad`; other video models fail
@@ -62,14 +68,29 @@ python ai_video/main.py --project potaroma_ad --auto-ad `
 - Product references are separate from character references. No
   `--character-reference-dir` is needed or accepted in auto-ad mode.
 - Existing research/plans/prompts/clips/audio are reused only when the
-  product URL, product fingerprint, plan fingerprint and files validate.
-  A changed URL or plan requires an explicit `--overwrite`.
+  product URL, product fingerprint, plan fingerprint, ad style/energy and
+  files validate. A changed URL, style, energy or plan requires an explicit
+  `--overwrite`.
 - `--stop-after video` stops before audio and final mux. Use
   `--stop-after all` for a complete spoken ad.
 - Auto-ad uses the existing local Piper provider (`piper_en` /
   `en_US-amy-medium`) for English narration by default. The normal pipeline
   still defaults to Edge TTS. Configure `product_ad.audio_model` and
   `product_ad.voice` in `config.yaml` to change this.
+
+Style and energy are stored in `prompt/ad_plan.json` (`ad_style`,
+`ad_energy`, `style_rationale`, `energy_rationale`) and in the plan
+fingerprint. Plans written before these fields existed used
+`ugc_product_showcase`; resuming one with the new defaults is rejected
+instead of silently reusing clips — rerun with `--overwrite` to replan.
+
+Planning uses Ollama structured output (a JSON schema) so every clip has
+`role`, `shot_type`, `camera`, prompts, spoken text and continuity, and so
+`role`/`shot_type` cannot fall outside the allowed values. For R2V chaining,
+new plans keep product-only shots contiguous and end on product/macro with a
+hybrid bridge before them: a human clip is never placed directly after a
+product-only frame, because the chain would have no creator left to preserve
+and the model would invent a new person.
 
 Auto-ad project layout:
 

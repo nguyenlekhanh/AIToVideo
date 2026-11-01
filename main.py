@@ -142,6 +142,12 @@ def validate_cli_combination(args) -> str | None:
             return "--resume requires --project"
         if getattr(args, "ad_duration", 30) <= 0:
             return "--ad-duration must be a positive number of seconds"
+        ad_style = getattr(args, "ad_style", ap.DEFAULT_AD_STYLE)
+        if ad_style not in ap.AD_STYLES:
+            return (f"--ad-style must be one of {', '.join(ap.AD_STYLES)}")
+        ad_energy = getattr(args, "ad_energy", ap.DEFAULT_AD_ENERGY)
+        if ad_energy not in ap.AD_ENERGIES:
+            return (f"--ad-energy must be one of {', '.join(ap.AD_ENERGIES)}")
         if getattr(args, "ad_clips", None) is not None and not (
                 1 <= args.ad_clips <= 8):
             return "--ad-clips must be between 1 and 8"
@@ -1216,9 +1222,14 @@ def parse_args(argv=None):
     p.add_argument("--ad-duration", type=float, default=30.0,
                    help="Target ad duration in seconds for --auto-ad "
                         "(default: 30).")
-    p.add_argument("--ad-style", default="ugc_product_showcase",
+    p.add_argument("--ad-style", default=ap.DEFAULT_AD_STYLE,
+                   choices=list(ap.AD_STYLES),
                    help="Creative style for --auto-ad "
-                        "(default: ugc_product_showcase).")
+                        f"(default: {ap.DEFAULT_AD_STYLE}).")
+    p.add_argument("--ad-energy", default=ap.DEFAULT_AD_ENERGY,
+                   choices=list(ap.AD_ENERGIES),
+                   help="Pacing/delivery energy for --auto-ad "
+                        f"(default: {ap.DEFAULT_AD_ENERGY}).")
     p.add_argument("--ad-language", default="en",
                    help="Ad language for --auto-ad (currently en; default: en).")
     p.add_argument("--ad-clips", type=int, default=None,
@@ -1472,6 +1483,43 @@ def auto_ad_resume_problem(state: dict, stages_planned: list[str],
     return None
 
 
+def plan_config_problem(plan: dict, *, target_duration: float, style: str,
+                        energy: str, language: str,
+                        clip_count: int) -> str | None:
+    """Reject reuse of a plan built for different creative settings.
+
+    Style and energy are independent inputs: clips generated for one pair
+    must never be silently reused for another. Pure function for tests.
+    """
+    stored_style = plan.get("ad_style") or plan.get("style") or "(unknown)"
+    stored_energy = plan.get("ad_energy") or "(none)"
+    changes = []
+    try:
+        stored_duration = float(plan.get("target_duration_seconds", 0))
+    except (TypeError, ValueError):
+        stored_duration = 0.0
+    if abs(stored_duration - float(target_duration)) > 0.01:
+        changes.append(f"duration {stored_duration:g}s vs "
+                       f"{float(target_duration):g}s")
+    if stored_style != style:
+        changes.append(f"style {stored_style!r} vs {style!r}")
+    if stored_energy != energy:
+        changes.append(f"energy {stored_energy!r} vs {energy!r}")
+    if plan.get("language") != language:
+        changes.append(f"language {plan.get('language')!r} vs {language!r}")
+    try:
+        stored_count = int(plan.get("clip_count", 0))
+    except (TypeError, ValueError):
+        stored_count = 0
+    if stored_count != int(clip_count):
+        changes.append(f"clip count {stored_count} vs {int(clip_count)}")
+    if not changes:
+        return None
+    return ("Existing auto-ad plan was generated for different settings ("
+            + "; ".join(changes)
+            + "); use --overwrite to replan and regenerate the clips.")
+
+
 def run_auto_ad_command(args, cfg) -> int:
     """Opt-in product URL -> research -> plan -> Prompt V2 -> R2V ad.
 
@@ -1556,6 +1604,12 @@ def run_auto_ad_command(args, cfg) -> int:
     clip_count = (args.ad_clips if args.ad_clips is not None
                   else ap.choose_clip_count(args.ad_duration, clip_duration))
     actual_total = ap.quantized_duration_seconds(clip_duration) * clip_count
+    try:
+        ad_style, ad_energy = ap.validate_style_energy(args.ad_style,
+                                                       args.ad_energy)
+    except ap.AdPlanError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     try:
         target_w, target_h = resolve_dimensions(args.aspect, args.resolution)
@@ -1571,6 +1625,7 @@ def run_auto_ad_command(args, cfg) -> int:
     print(f"Planning model: {model} (text-only)")
     print(f"Vision verifier: {vision_model if require_vision else 'disabled'}")
     print(f"Video model: minimax_h3_r2v (required)")
+    print(f"Ad style: {ad_style} | energy: {ad_energy}")
     print(f"Ad target: {args.ad_duration:g}s, {clip_count} clips x "
           f"{clip_duration:g}s (R2V quantized total {actual_total:.3f}s)")
     print(f"Aspect: {args.aspect}; resolution: {args.resolution}p; "
@@ -1596,15 +1651,11 @@ def run_auto_ad_command(args, cfg) -> int:
                 raise pr.ProductResearchError(
                     f"Existing auto-ad plan belongs to a different product "
                     f"URL ({stored_url}); use --overwrite.")
-            if (abs(float(plan.get("target_duration_seconds", 0))
-                    - float(args.ad_duration)) > 0.01
-                    or plan.get("style") != args.ad_style
-                    or plan.get("language") != language
-                    or int(plan.get("clip_count", 0)) != clip_count):
-                raise ap.AdPlanError(
-                    "Existing auto-ad plan was generated for different "
-                    "--ad-duration/--ad-style/--ad-language/--ad-clips "
-                    "settings; use --overwrite to replan.")
+            problem = plan_config_problem(
+                plan, target_duration=args.ad_duration, style=ad_style,
+                energy=ad_energy, language=language, clip_count=clip_count)
+            if problem:
+                raise ap.AdPlanError(problem)
             for image in record.get("selected_images") or []:
                 if not st.valid_image_file(image.get("path", "")):
                     raise pr.ProductResearchError(
@@ -1636,12 +1687,13 @@ def run_auto_ad_command(args, cfg) -> int:
                   f"{len(record.get('selected_images') or [])}")
             print("[Auto ad] Analyzing product and planning grounded ad")
             analysis = ap.analyze_product(
-                record, model=model, base_url=ollama_url,
-                timeout=planning_timeout)
+                record, model=model, style=ad_style, energy=ad_energy,
+                base_url=ollama_url, timeout=planning_timeout)
             pr.save_json(os.path.join(source_dir, "ad_analysis.json"), analysis)
             plan = ap.plan_ad(
                 record, analysis, model=model,
-                target_duration=args.ad_duration, style=args.ad_style,
+                target_duration=args.ad_duration, style=ad_style,
+                energy=ad_energy,
                 language=language, clip_count=clip_count,
                 clip_duration=clip_duration, base_url=ollama_url,
                 timeout=planning_timeout)
@@ -1736,6 +1788,7 @@ def run_auto_ad_command(args, cfg) -> int:
         "width": int(target_w), "height": int(target_h),
         "aspect": args.aspect, "resolution": args.resolution,
         "video_model": "minimax_h3_r2v",
+        "ad_style": ad_style, "ad_energy": ad_energy,
     }
     audio_meta = {"model": audio_model, "voice": voice}
     if not args.overwrite:

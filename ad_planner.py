@@ -34,6 +34,293 @@ MIN_CLIP_COUNT = 1
 ALLOWED_ROLES = {"hook", "problem", "feature", "demo", "benefit",
                  "lifestyle", "cta"}
 CLAIM_ROLES = {"feature", "demo", "benefit"}
+
+# Ad style = storytelling/format. Ad energy = pacing and delivery. They are
+# independent: every style/energy pair must produce a different creative
+# brief and different prompts.
+AD_STYLES = ("hybrid_ugc_cinematic", "viral_ugc", "premium_commercial",
+             "storytelling")
+AD_ENERGIES = ("viral", "natural", "premium")
+DEFAULT_AD_STYLE = "hybrid_ugc_cinematic"
+DEFAULT_AD_ENERGY = "viral"
+# Style value written by the first auto-ad release. Still accepted when
+# validating/reading old plans so those plans fail with a precise resume
+# message instead of an unreadable file.
+LEGACY_AD_STYLE = "ugc_product_showcase"
+LEGACY_AD_ENERGY = "natural"
+ALLOWED_SHOT_TYPES = ("human_ugc", "hybrid", "product_showcase",
+                      "macro_detail")
+HUMAN_SHOT_TYPES = {"human_ugc", "hybrid"}
+PRODUCT_SHOT_TYPES = {"product_showcase", "macro_detail"}
+ROLE_DEFAULT_SHOT = {
+    "hook": "human_ugc", "problem": "human_ugc", "feature": "product_showcase",
+    "demo": "hybrid", "benefit": "product_showcase", "lifestyle": "human_ugc",
+    "cta": "hybrid",
+}
+
+# Each style carries: a short summary for the planner, concrete planning
+# rules, a concise visual-style line, a dialogue/voice-over direction, a CTA
+# direction, a style-specific restriction, and per-shot-type visual and
+# human/product balance lines. Prompt text stays short: these are folded
+# into one or two lines per clip, never dumped verbatim.
+STYLE_PROFILES = {
+    "hybrid_ugc_cinematic": {
+        "summary": (
+            "Real human creator in believable everyday situations, with "
+            "cinematic product showcase and macro detail shots between the "
+            "UGC beats."),
+        "planning_rules": [
+            "Use a real human creator in a believable everyday situation "
+            "with natural UGC-style reactions.",
+            "Intercut human UGC beats with cinematic product showcase and "
+            "macro detail beats; the mix must be intentional.",
+            "Never make every clip a talking head and never make every clip "
+            "product-only.",
+            "Keep the same human, product, room and lighting across clips.",
+        ],
+        "visual": (
+            "Photorealistic hybrid of handheld UGC and cinematic product "
+            "cinematography; one consistent creator, product, room and "
+            "lighting."),
+        "dialogue": (
+            "Natural creator-style English voice-over; conversational, never "
+            "corporate."),
+        "cta": "Warm, natural call to action in the creator's voice.",
+        "restriction": "Do not replace the creator between shots.",
+        "shots": {
+            "human_ugc": "Authentic creator in a real home, natural handheld "
+                         "framing, genuine expression.",
+            "hybrid": "Creator's hands and face with the product, cinematic "
+                      "framing, real home.",
+            "product_showcase": "Cinematic product insert: smooth dolly or "
+                                "orbit, shallow depth of field, attractive "
+                                "practical light.",
+            "macro_detail": "Macro detail of the product, soft directional "
+                            "light, slow push-in.",
+        },
+        "balance": {
+            "human_ugc": "Human-led UGC beat; product clearly visible in "
+                         "frame.",
+            "hybrid": "Creator and product together in one continuous shot.",
+            "product_showcase": "Cinematic product-only beat; no talking head.",
+            "macro_detail": "Product detail only; no human face.",
+        },
+    },
+    "viral_ugc": {
+        "summary": (
+            "Creator-led product review: strong opening hook, direct-to-camera "
+            "delivery, expressive and humorous reactions, fast visual "
+            "storytelling."),
+        "planning_rules": [
+            "Open with a strong first-second hook spoken straight to camera.",
+            "Keep the creator leading the review with natural, expressive and "
+            "humorous reactions.",
+            "Use fast visual storytelling in relatable everyday situations.",
+            "Avoid generic corporate commercial language.",
+        ],
+        "visual": (
+            "Photorealistic handheld UGC review look; one consistent creator, "
+            "product and room."),
+        "dialogue": (
+            "Direct-to-camera, expressive, conversational English; no "
+            "corporate script language."),
+        "cta": "Casual, confident call to action.",
+        "restriction": "No corporate voice-over tone or stock-commercial "
+                       "wording.",
+        "shots": {
+            "human_ugc": "Creator talking straight to camera, energetic "
+                         "handheld framing, natural room light.",
+            "hybrid": "Creator holding the product to camera while "
+                      "demonstrating it, energetic handheld framing.",
+            "product_showcase": "Punchy product insert with a quick camera "
+                                "move.",
+            "macro_detail": "Fast macro beat on one product detail.",
+        },
+        "balance": {
+            "human_ugc": "Creator-led, direct-to-camera beat.",
+            "hybrid": "Creator and product together, still creator-led.",
+            "product_showcase": "Short product-only insert; keep it brief.",
+            "macro_detail": "Product detail only; no talking head.",
+        },
+    },
+    "premium_commercial": {
+        "summary": (
+            "Product-first cinematic storytelling: macro product detail, "
+            "smooth deliberate camera moves, sophisticated composition and "
+            "minimal confident voice-over."),
+        "planning_rules": [
+            "Keep the product as the visual hero in a product-first story.",
+            "Use cinematic lighting, macro product detail, smooth deliberate "
+            "camera movement and sophisticated composition.",
+            "Keep the voice-over minimal and confident.",
+            "Avoid UGC-style talking heads and chatty delivery.",
+        ],
+        "visual": (
+            "Photorealistic premium commercial cinematography; product-first, "
+            "refined lighting, elegant composition."),
+        "dialogue": "Minimal, calm and confident English voice-over.",
+        "cta": "Confident, understated call to action.",
+        "restriction": "No talking-head UGC delivery; the product stays the "
+                       "hero.",
+        "shots": {
+            "human_ugc": "Hands only, elegant framing; no face, no talking "
+                         "head.",
+            "hybrid": "Hands presenting the product in refined light, precise "
+                      "composition.",
+            "product_showcase": "Premium hero shot, controlled dolly, shallow "
+                                "depth of field, elegant light.",
+            "macro_detail": "Extreme macro on a product detail, controlled "
+                            "highlights, slow slide.",
+        },
+        "balance": {
+            "human_ugc": "Hands only; product remains the hero.",
+            "hybrid": "Restrained human hands with the product; no dialogue to "
+                      "camera.",
+            "product_showcase": "Product-only cinematic beat.",
+            "macro_detail": "Product detail only; no human presence.",
+        },
+    },
+    "storytelling": {
+        "summary": (
+            "Relatable problem, emotional build, product introduced as the "
+            "solution, believable demonstration, memorable resolution and "
+            "CTA."),
+        "planning_rules": [
+            "Establish a relatable everyday problem before the product "
+            "appears.",
+            "Build emotional engagement, then introduce the product as the "
+            "solution.",
+            "Show one believable demonstration of a verified feature.",
+            "Finish with a memorable emotional resolution and an honest call "
+            "to action.",
+            "Do not invent testimonials, reviews or customer experiences.",
+        ],
+        "visual": (
+            "Photorealistic warm narrative cinematography; one consistent "
+            "person, product and room."),
+        "dialogue": (
+            "Warm narrative English voice-over telling one small, honest "
+            "story."),
+        "cta": "Sincere, memorable call to action.",
+        "restriction": "Do not invent testimonials, reviews or customer "
+                       "experiences.",
+        "shots": {
+            "human_ugc": "Relatable everyday moment, warm natural light, "
+                         "intimate framing.",
+            "hybrid": "Hands and product in a believable home moment, warm "
+                      "intimate framing.",
+            "product_showcase": "Calm cinematic product shot, soft light, "
+                                "gentle push-in.",
+            "macro_detail": "Close detail of the product solving the problem, "
+                            "soft focus falloff.",
+        },
+        "balance": {
+            "human_ugc": "Human story beat; product enters naturally.",
+            "hybrid": "Person and product together in the story moment.",
+            "product_showcase": "Product-only story beat.",
+            "macro_detail": "Product detail only; no human face.",
+        },
+    },
+}
+
+ENERGY_PROFILES = {
+    "viral": {
+        "summary": (
+            "Fast pacing, strong first-second hook, expressive delivery, "
+            "dynamic camera movement, TikTok-native rhythm."),
+        "planning_rules": [
+            "Put the strongest hook in the first second.",
+            "Keep beats quick and visual density high.",
+            "Delivery is expressive and energetic.",
+        ],
+        "prompt": (
+            "Fast pacing, strong first-second hook, expressive delivery, "
+            "dynamic handheld camera movement, quick beat changes."),
+        "delivery": "expressive and energetic",
+    },
+    "natural": {
+        "summary": (
+            "Conversational and relatable, comfortable pacing, authentic "
+            "reactions, subtle transitions, no exaggerated selling."),
+        "planning_rules": [
+            "Keep pacing comfortable and conversational.",
+            "Use authentic reactions and subtle transitions.",
+            "Avoid exaggerated selling and artificial enthusiasm.",
+        ],
+        "prompt": (
+            "Comfortable conversational pacing, authentic reactions, subtle "
+            "transitions, steady handheld camera, no exaggerated enthusiasm."),
+        "delivery": "conversational and relaxed",
+    },
+    "premium": {
+        "summary": (
+            "Deliberate pacing, elegant controlled camera movement, "
+            "sophisticated lighting and composition, calm confident "
+            "voice-over."),
+        "planning_rules": [
+            "Keep pacing deliberate and unhurried.",
+            "Use elegant, controlled camera movement and sophisticated "
+            "lighting.",
+            "Emphasise product detail and visual quality.",
+            "Delivery is calm and confident.",
+        ],
+        "prompt": (
+            "Deliberate pacing, elegant controlled camera movement, "
+            "sophisticated lighting and composition, calm confident "
+            "delivery."),
+        "delivery": "calm and confident",
+    },
+}
+
+
+def validate_style_energy(style: str, energy: str) -> tuple[str, str]:
+    """Validate the two independent creative dimensions.
+
+    Raises AdPlanError with a precise message so CLI validation can fail
+    before any research, planning or rendering starts.
+    """
+    value = (style or "").strip().lower()
+    if value not in AD_STYLES:
+        raise AdPlanError(
+            f"Unsupported ad style {style!r}; choose one of "
+            f"{', '.join(AD_STYLES)}.")
+    level = (energy or "").strip().lower()
+    if level not in AD_ENERGIES:
+        raise AdPlanError(
+            f"Unsupported ad energy {energy!r}; choose one of "
+            f"{', '.join(AD_ENERGIES)}.")
+    return value, level
+
+
+def _style_and_energy(style: str, energy: str) -> tuple[str, str]:
+    """Accept the legacy style for old-plan validation only."""
+    if (style or "").strip().lower() == LEGACY_AD_STYLE:
+        level = (energy or LEGACY_AD_ENERGY).strip().lower()
+        if level not in AD_ENERGIES:
+            level = LEGACY_AD_ENERGY
+        return LEGACY_AD_STYLE, level
+    return validate_style_energy(style, energy)
+
+
+def _creative_brief(style: str, energy: str) -> str:
+    profile = STYLE_PROFILES.get(style) or STYLE_PROFILES[DEFAULT_AD_STYLE]
+    energy_profile = ENERGY_PROFILES.get(energy) or ENERGY_PROFILES[DEFAULT_AD_ENERGY]
+    lines = [
+        f"AD STYLE: {style}",
+        f"STYLE DEFINITION: {profile['summary']}",
+        "STYLE RULES:",
+    ]
+    lines += [f"- {rule}" for rule in profile["planning_rules"]]
+    lines += [
+        f"VOICE-OVER DIRECTION: {profile['dialogue']}",
+        f"CTA DIRECTION: {profile['cta']}",
+        "",
+        f"AD ENERGY: {energy}",
+        f"ENERGY DEFINITION: {energy_profile['summary']}",
+        "ENERGY RULES:",
+    ]
+    lines += [f"- {rule}" for rule in energy_profile["planning_rules"]]
+    return "\n".join(lines)
 FORBIDDEN_SCRIPT_RE = re.compile(
     r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af"
     r"\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f]")
@@ -210,6 +497,11 @@ Schema:
 Rules:
 - Every verified_benefits item must cite at least one supplied feature id.
 - Keep the audience, problem and outcome specific to the product.
+- The supplied CREATIVE BRIEF (ad style and ad energy) is the required
+  creative direction. recommended_angle must fit it, and the problem and
+  outcome must be framed for that style and energy.
+- The final ad is ONE continuous single-take sequence with no cuts. Do not
+  recommend cuts, scene changes, montage editing or multiple locations.
 - claims_to_avoid must name risky claims that this ad must not make.
 - English only. /no_think"""
 
@@ -224,8 +516,10 @@ endorsements, or performance results. Do not claim the product is "best",
 exact claim is present in a supplied verified feature.
 Schema:
 {"ad_title":"...", "audience":"...", "core_message":"...",
+ "style_rationale":"...", "energy_rationale":"...",
  "clips":[{"id":1,"role":"hook|problem|feature|demo|benefit|lifestyle|cta",
-           "image_prompt":"...", "video_prompt":"...",
+           "shot_type":"human_ugc|hybrid|product_showcase|macro_detail",
+           "camera":"...", "image_prompt":"...", "video_prompt":"...",
            "spoken_text":"...", "on_screen_text":null,
            "continuity":"...", "feature_ids":["f1"],
            "product_reference_ids":["img_1"]}],
@@ -233,34 +527,135 @@ Schema:
  "claims_avoided":["..."], "cta":"...",
  "audio_plan":{"mode":"per_clip_voiceover"}}
 Rules:
+- Follow the supplied AD STYLE and AD ENERGY exactly; they are independent
+  dimensions and both must shape the hook, shot mix, camera, pacing and
+  delivery.
+- style_rationale: one sentence explaining how the plan expresses the
+  selected style. energy_rationale: one sentence for the selected energy.
 - Produce exactly the requested number of clips, numbered 1..N in order.
-- Each clip is a vertical 9:16 UGC product-showcase shot.
+- Each clip is a vertical 9:16 ad shot.
 - This is ONE continuous single-take sequence. Clip 1 starts from the
   verified product image. Every later clip starts from the exact last frame
   of the previous clip. Never cut to a new scene, location, subject or
-  camera angle. Keep the same hand, product, background and lighting.
-- Do not write a cat-only or lifestyle-only shot. The product, or the hand
-  holding it, must remain visible in every clip. For clips after 1, the
-  video_prompt must explicitly continue the same action and mention the
-  product or hand.
-- spoken_text is natural English voiceover for roughly five seconds:
+  camera angle. Keep the same person/hand, product, background and lighting.
+- The product, or the hand holding it, must remain visible in every clip,
+  including problem and lifestyle beats. Never write a cat-only or
+  mess-only shot.
+- on_screen_text must always be an empty string: this ad has no on-screen
+  text, captions or subtitles.
+- For clips after 1, the video_prompt must explicitly continue the same
+  action and mention the product or hand.
+- shot_type marks who leads the shot: human_ugc (creator on camera),
+  hybrid (creator plus product), product_showcase (product-only cinematic),
+  macro_detail (product detail only). Choose the mix the style requires.
+- Continuity across the R2V chain: a product-only shot contains no creator,
+  so the clip after it must be another product shot or a hybrid shot that
+  brings the same hands/creator back. Never put human_ugc directly after a
+  product_showcase or macro_detail clip.
+- Describe the creator once (hair, clothing, age) in clip 1 and repeat the
+  same description in every human_ugc and hybrid clip so the person does
+  not change between shots. Name the same cat and room too.
+- camera describes one camera move and composition (for example "slow
+  dolly in, product centred, shallow depth of field").
+- spoken_text is natural English voice-over for roughly five seconds:
   8-16 words per clip. No stage directions, no speaker labels.
 - image_prompt describes one photorealistic opening/key frame.
-- video_prompt describes visible action, camera movement and product handling.
-  It must not ask for on-screen text, captions, subtitles, logos or watermarks.
+- video_prompt describes visible action and product handling. It must not
+  ask for on-screen text, captions, subtitles, logos or watermarks.
 - continuity explains how this clip continues from the previous clip.
 - For role feature/demo/benefit, feature_ids must cite supplied feature ids.
 - claims_used must cite only supplied feature ids. Prefer concrete product
   details over superlatives. The CTA must be honest and non-urgent.
 - product_reference_ids must use supplied image ids only.
+- Every clip object MUST contain all of these keys, even when a value is
+  null: id, role, shot_type, camera, image_prompt, video_prompt,
+  spoken_text, on_screen_text, continuity, feature_ids,
+  product_reference_ids. Never omit a key.
 - English only. /no_think"""
 
 
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ad_title": {"type": "string"},
+        "audience": {"type": "string"},
+        "core_message": {"type": "string"},
+        "style_rationale": {"type": "string"},
+        "energy_rationale": {"type": "string"},
+        "clips": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "role": {"type": "string",
+                             "enum": sorted(ALLOWED_ROLES)},
+                    "shot_type": {"type": "string",
+                                  "enum": list(ALLOWED_SHOT_TYPES)},
+                    "camera": {"type": "string"},
+                    "image_prompt": {
+                        "type": "string",
+                        "description": ("Photorealistic description of this "
+                                        "clip's opening/key frame in words. "
+                                        "Never an image id."),
+                    },
+                    "video_prompt": {"type": "string"},
+                    "spoken_text": {"type": "string", "minLength": 1},
+                    "on_screen_text": {"type": "string", "enum": [""]},
+                    "continuity": {"type": "string"},
+                    "feature_ids": {"type": "array",
+                                    "items": {"type": "string"}},
+                    "product_reference_ids": {"type": "array",
+                                              "items": {"type": "string"}},
+                },
+                "required": [
+                    "id", "role", "shot_type", "camera", "image_prompt",
+                    "video_prompt", "spoken_text", "on_screen_text",
+                    "continuity", "feature_ids", "product_reference_ids"],
+            },
+        },
+        "claims_used": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "feature_ids": {"type": "array",
+                                    "items": {"type": "string"}},
+                },
+                "required": ["text", "feature_ids"],
+            },
+        },
+        "claims_avoided": {"type": "array", "items": {"type": "string"}},
+        "cta": {"type": "string"},
+        "audio_plan": {
+            "type": "object",
+            "properties": {"mode": {"type": "string",
+                                    "enum": ["per_clip_voiceover"]}},
+            "required": ["mode"],
+        },
+    },
+    "required": [
+        "ad_title", "audience", "core_message", "style_rationale",
+        "energy_rationale", "clips", "claims_used", "claims_avoided",
+        "cta", "audio_plan"],
+}
+
+
 def analyze_product(record: dict, *, model: str,
+                    style: str = DEFAULT_AD_STYLE,
+                    energy: str = DEFAULT_AD_ENERGY,
                     base_url: str = "http://127.0.0.1:11434",
                     timeout: int = 600, max_attempts: int = 2) -> dict:
-    """Run the grounded marketing-analysis stage with bounded retries."""
+    """Run the grounded marketing-analysis stage with bounded retries.
+
+    The selected ad style and energy are passed explicitly as a creative
+    brief so the analysis frames the problem/angle for the intended format.
+    """
+    style, energy = _style_and_energy(style, energy)
     user = (
+        f"CREATIVE BRIEF (required direction, not product facts):\n"
+        f"{_creative_brief(style, energy)}\n\n"
         "VERIFIED PRODUCT FACTS:\n"
         f"{_facts_text(record)}\n\n"
         "VERIFIED FEATURES (only these feature ids may be cited):\n"
@@ -367,15 +762,66 @@ def _clip_count_text(count: int, clip_duration: float) -> str:
         f"duration instructions in the prompt).")
 
 
+def _suggested_shot_sequence(style: str, clip_count: int) -> str:
+    """A safe R2V chain order: never return to a human after a product shot.
+
+    The hybrid bridge is the last human-led beat, so the creator is still in
+    frame when the product block begins. The ad then ends on product/macro
+    with the creator's voice-over carrying the CTA.
+    """
+    if clip_count < 3 or style not in STYLE_PROFILES:
+        return ""
+    if style in ("hybrid_ugc_cinematic", "storytelling", "viral_ugc"):
+        tail = ["hybrid", "product_showcase", "macro_detail"]
+        human_count = max(1, clip_count - len(tail))
+        seq = ["human_ugc"] * human_count + tail
+    else:
+        return ""
+    seq = seq[:clip_count]
+    return "Suggested safe shot order: " + ", ".join(seq) + "."
+
+
+def _shot_mix_requirement(style: str, clip_count: int) -> str:
+    """One-line shot-mix requirement for the planning prompt."""
+    if style not in STYLE_PROFILES or clip_count < 3:
+        return ("choose the shot types that best express this style; the "
+                "product or hand must stay visible in every clip")
+    if style == "hybrid_ugc_cinematic":
+        return ("at least one human_ugc shot AND at least one "
+                "product_showcase or macro_detail shot; never all talking "
+                "head, never all product-only; a product-only shot must be "
+                "followed by another product shot or a hybrid bridging shot, "
+                "never directly by human_ugc. "
+                + _suggested_shot_sequence(style, clip_count))
+    if style == "viral_ugc":
+        return ("at least one creator-led human_ugc shot; product inserts "
+                "stay short and are followed by another product shot or a "
+                "hybrid bridging shot, never directly by human_ugc. "
+                + _suggested_shot_sequence(style, clip_count))
+    if style == "premium_commercial":
+        return ("at least one product_showcase or macro_detail shot, and at "
+                "most half of the clips may be human-led; keep hands visible "
+                "when a human beat follows a product shot")
+    if style == "storytelling":
+        return ("open with a hook or problem clip, include a demonstration "
+                "or verified-benefit clip, and finish with a cta clip; a "
+                "product-only shot must be followed by another product shot "
+                "or a hybrid bridging shot, never directly by human_ugc. "
+                + _suggested_shot_sequence(style, clip_count))
+    return "keep the product visible in every clip"
+
+
 def plan_ad(record: dict, analysis: dict, *, model: str,
             target_duration: float = 30.0,
-            style: str = "ugc_product_showcase",
+            style: str = DEFAULT_AD_STYLE,
+            energy: str = DEFAULT_AD_ENERGY,
             language: str = "en",
             clip_count: int | None = None,
             clip_duration: float = CLIP_DURATION_SECONDS,
             base_url: str = "http://127.0.0.1:11434",
-            timeout: int = 600, max_attempts: int = 3) -> dict:
+            timeout: int = 600, max_attempts: int = 6) -> dict:
     """Run the grounded creative-planning stage with bounded retries."""
+    style, energy = _style_and_energy(style, energy)
     if language.lower() not in ("en", "en-us", "en-gb"):
         raise AdPlanError(
             f"Unsupported ad language {language!r}; this pipeline currently "
@@ -387,6 +833,8 @@ def plan_ad(record: dict, analysis: dict, *, model: str,
             f"Clip count must be {MIN_CLIP_COUNT}..{MAX_CLIP_COUNT}; got {clip_count}.")
     actual_total = quantized_duration_seconds(clip_duration) * clip_count
     user = (
+        "CREATIVE BRIEF (required direction, not product facts):\n"
+        f"{_creative_brief(style, energy)}\n\n"
         "VERIFIED PRODUCT FACTS:\n"
         f"{_facts_text(record)}\n\n"
         "VERIFIED FEATURES (only these feature ids may be cited):\n"
@@ -399,40 +847,132 @@ def plan_ad(record: dict, analysis: dict, *, model: str,
         f"{_clip_count_text(clip_count, clip_duration)}\n"
         f"Target ad duration: {target_duration:g} seconds. "
         f"The backend's quantized total for this plan is {actual_total:.3f} seconds.\n"
-        f"Style: {style}. Language: English. Aspect: vertical 9:16.\n\n"
+        f"AD STYLE: {style}. AD ENERGY: {energy}. Language: English. "
+        "Aspect: vertical 9:16.\n"
+        f"Required shot mix: {_shot_mix_requirement(style, clip_count)}\n\n"
         "Return the ad-plan JSON now.")
     last_error = None
+    previous_errors: list[str] = []
     for attempt in range(1, max_attempts + 1):
         prompt = user
         if last_error is not None:
             prompt += (
-                "\n\nYour previous answer was invalid: "
-                f"{last_error}. Return a corrected JSON object that follows "
-                "the schema, uses exactly the requested clip count, and cites "
-                "only supplied feature/image ids.")
+                "\n\nYour previous answer was invalid:\n"
+                f"- {last_error}\n"
+                "Fix every listed problem and return the complete JSON again.\n"
+                f"Use exactly {clip_count} clips, ids 1..{clip_count}.\n"
+                "Every clip object MUST include ALL of these keys, even when "
+                "null: id, role, shot_type, camera, image_prompt, "
+                "video_prompt, spoken_text, on_screen_text, continuity, "
+                "feature_ids, product_reference_ids.\n"
+                f"Every clip role MUST be one of: "
+                f"{', '.join(sorted(ALLOWED_ROLES))}. No other role values "
+                "are allowed. Field names from the marketing analysis such "
+                "as desired_outcome, problem, audience, objections or "
+                "recommended_angle are NOT roles.\n"
+                f"Every clip shot_type MUST be one of: "
+                f"{', '.join(sorted(ALLOWED_SHOT_TYPES))}.\n"
+                "Every clip after 1 MUST literally mention the product, the "
+                "trimmer or the hand in video_prompt and continue the same "
+                "single-take action. This includes problem and lifestyle "
+                "clips: never a cat-only or mess-only shot.\n"
+                "on_screen_text MUST be an empty string for every clip.\n"
+                f"Required shot mix: {_shot_mix_requirement(style, clip_count)}.\n"
+                "Cite only the supplied feature ids and image ids.")
         try:
             parsed = ol.chat_json(
                 PLAN_SYSTEM, prompt, model=model, base_url=base_url,
-                timeout=timeout, temperature=0.4, num_predict=4096,
-                think=False)
+                timeout=timeout, temperature=0.2, num_predict=8192,
+                think=False, schema=PLAN_SCHEMA)
             return validate_plan(
                 parsed, record, target_duration=target_duration, style=style,
-                language="en", clip_count=clip_count,
-                clip_duration=clip_duration, model=model)
+                energy=energy, language="en", clip_count=clip_count,
+                clip_duration=clip_duration, model=model,
+                strict_continuity=True)
         except (RuntimeError, ValueError, AdPlanError) as exc:
             last_error = str(exc)
+            if last_error not in previous_errors:
+                previous_errors.append(last_error)
             if attempt >= max_attempts:
                 raise AdPlanError(
                     f"Ad planning failed after {max_attempts} attempt(s): "
-                    f"{last_error}") from exc
+                    f"{'; '.join(previous_errors)}") from exc
     raise AdPlanError("Ad planning failed.")
+
+
+def _enforce_shot_mix(style: str, clips: list[dict], clip_count: int,
+                      *, strict_continuity: bool = False) -> None:
+    """Reject plans whose shot mix contradicts the selected style.
+
+    Short plans (1-2 clips) cannot express a mix, so only the shot_type
+    value itself is validated there. `strict_continuity` is enabled for new
+    plans; existing rendered plans must stay loadable so resume keeps
+    working even if they predate the R2V bridging rule.
+    """
+    if style not in STYLE_PROFILES or clip_count < 3:
+        return
+    shots = [clip["shot_type"] for clip in clips]
+    roles = [clip["role"] for clip in clips]
+    human = sum(1 for shot in shots if shot in HUMAN_SHOT_TYPES)
+    product = sum(1 for shot in shots if shot in PRODUCT_SHOT_TYPES)
+    # R2V chaining starts each clip from the previous clip's last frame. A
+    # product-only frame contains no creator, so cutting straight back to a
+    # human_ugc clip forces the model to invent a new person. Require a
+    # hybrid bridging shot (or another product shot) between them.
+    if strict_continuity and style != "premium_commercial":
+        for index in range(len(shots) - 1):
+            if (shots[index] in PRODUCT_SHOT_TYPES
+                    and shots[index + 1] == "human_ugc"):
+                raise AdPlanError(
+                    "a human_ugc clip cannot directly follow a product-only "
+                    f"shot (clips {index + 1}->{index + 2}); insert a hybrid "
+                    "bridging shot or keep the product shots contiguous so "
+                    "the same creator survives the chain.")
+    if style == "hybrid_ugc_cinematic":
+        if human == 0 or product == 0:
+            raise AdPlanError(
+                "hybrid_ugc_cinematic requires at least one human UGC shot "
+                "and at least one cinematic product showcase/macro shot; "
+                f"got shots {shots}.")
+    elif style == "viral_ugc":
+        if human == 0:
+            raise AdPlanError(
+                "viral_ugc requires at least one creator-led human_ugc shot; "
+                f"got shots {shots}.")
+    elif style == "premium_commercial":
+        if product == 0:
+            raise AdPlanError(
+                "premium_commercial requires at least one product_showcase "
+                f"or macro_detail shot; got shots {shots}.")
+        if human > clip_count // 2:
+            raise AdPlanError(
+                "premium_commercial must stay product-first; at most "
+                f"{clip_count // 2} of {clip_count} clips may be human-led; "
+                f"got shots {shots}.")
+    elif style == "storytelling":
+        if not ({"hook", "problem"} & set(roles)):
+            raise AdPlanError(
+                "storytelling must open with a relatable hook or problem "
+                f"clip; got roles {roles}.")
+        if roles[-1] != "cta":
+            raise AdPlanError(
+                "storytelling must finish with a cta clip; got roles "
+                f"{roles}.")
+        if not ({"demo", "feature", "benefit", "lifestyle"} & set(roles)):
+            raise AdPlanError(
+                "storytelling must include a believable demonstration or "
+                f"verified-benefit clip; got roles {roles}.")
 
 
 def validate_plan(data: dict, record: dict, *, target_duration: float,
                   style: str, language: str, clip_count: int,
-                  clip_duration: float, model: str) -> dict:
+                  clip_duration: float, model: str,
+                  energy: str = DEFAULT_AD_ENERGY,
+                  strict_continuity: bool = False) -> dict:
     if not isinstance(data, dict):
         raise AdPlanError("Ad plan response is not a JSON object.")
+    style, energy = _style_and_energy(style, energy)
+    new_style = style in STYLE_PROFILES
     allowed_features = _feature_ids(record)
     allowed_refs = _reference_ids(record)
     if not allowed_refs:
@@ -452,6 +992,14 @@ def validate_plan(data: dict, record: dict, *, target_duration: float,
     audience = _require_str(data, "audience", max_len=300, label="plan")
     core_message = _require_str(data, "core_message", max_len=400,
                                 label="plan")
+    if new_style:
+        style_rationale = _require_str(data, "style_rationale", max_len=400,
+                                       label="plan")
+        energy_rationale = _require_str(data, "energy_rationale", max_len=400,
+                                        label="plan")
+    else:
+        style_rationale = clean_text(data.get("style_rationale"), max_len=400)
+        energy_rationale = clean_text(data.get("energy_rationale"), max_len=400)
     clips = data.get("clips")
     if not isinstance(clips, list) or len(clips) != clip_count:
         got = len(clips) if isinstance(clips, list) else "non-list"
@@ -474,10 +1022,31 @@ def validate_plan(data: dict, record: dict, *, target_duration: float,
             raise AdPlanError(
                 f"plan.clips[{index}].role must be one of "
                 f"{sorted(ALLOWED_ROLES)}; got {role!r}.")
-        image_prompt = _require_str(clip, "image_prompt", max_len=1000,
-                                    label=f"plan.clip {index}")
+        raw_shot = clean_text(clip.get("shot_type"), max_len=30).lower()
+        if new_style:
+            if raw_shot not in ALLOWED_SHOT_TYPES:
+                raise AdPlanError(
+                    f"plan.clips[{index}].shot_type must be one of "
+                    f"{sorted(ALLOWED_SHOT_TYPES)}; got {raw_shot!r}.")
+            shot_type = raw_shot
+            camera = _require_str(clip, "camera", max_len=300,
+                                  label=f"plan.clip {index}")
+        else:
+            shot_type = (raw_shot if raw_shot in ALLOWED_SHOT_TYPES
+                         else ROLE_DEFAULT_SHOT.get(role, "hybrid"))
+            camera = clean_text(clip.get("camera"), max_len=300)
         video_prompt = _require_str(clip, "video_prompt", max_len=1600,
                                     label=f"plan.clip {index}")
+        image_prompt = _require_str(clip, "image_prompt", max_len=1000,
+                                    label=f"plan.clip {index}")
+        if (re.fullmatch(r"img[_-]?\d+", image_prompt.strip(), re.I)
+                or len(image_prompt.split()) < 6):
+            # Small local models often copy an image id into image_prompt.
+            # The R2V pipeline uses video_prompt and the verified product
+            # image, so derive a usable opening-frame description instead of
+            # failing the whole plan.
+            image_prompt = clean_text("Opening frame: " + video_prompt,
+                                      max_len=1000)
         if index > 1:
             lower_video = video_prompt.lower()
             if any(term in lower_video for term in
@@ -488,9 +1057,13 @@ def validate_plan(data: dict, record: dict, *, target_duration: float,
             if not any(term in lower_video for term in
                        ("trimmer", "product", "hand", "guard", "handle",
                         "nail file", "clipper", "tool", "device")):
-                raise AdPlanError(
-                    f"plan.clip {index}.video_prompt must keep the product "
-                    "or hand visible and continue the product action.")
+                # A product_showcase/macro_detail shot is product-led by
+                # definition: the product itself is the visible subject, so
+                # requiring an extra keyword would reject valid direction.
+                if not (new_style and shot_type in PRODUCT_SHOT_TYPES):
+                    raise AdPlanError(
+                        f"plan.clip {index}.video_prompt must keep the product "
+                        "or hand visible and continue the product action.")
         spoken = _require_str(clip, "spoken_text", max_len=300,
                               label=f"plan.clip {index}")
         words = _word_count(spoken)
@@ -544,6 +1117,8 @@ def validate_plan(data: dict, record: dict, *, target_duration: float,
         clean_clips.append({
             "id": index,
             "role": role,
+            "shot_type": shot_type,
+            "camera": camera,
             "image_prompt": image_prompt,
             "video_prompt": video_prompt,
             "spoken_text": spoken,
@@ -554,6 +1129,8 @@ def validate_plan(data: dict, record: dict, *, target_duration: float,
             # every clip; the planner cannot drop product identity midway.
             "product_reference_ids": sorted(allowed_refs),
         })
+    _enforce_shot_mix(style, clean_clips, clip_count,
+                      strict_continuity=strict_continuity)
     min_words = max(12, 6 * clip_count)
     max_words = max(24, 24 * clip_count)
     if total_words < min_words or total_words > max_words:
@@ -630,7 +1207,13 @@ def validate_plan(data: dict, record: dict, *, target_duration: float,
         "ad_title": ad_title,
         "audience": audience,
         "core_message": core_message,
+        # `style` is kept for backward compatibility with plans written by
+        # the first auto-ad release; `ad_style`/`ad_energy` are canonical.
         "style": style,
+        "ad_style": style,
+        "ad_energy": energy,
+        "style_rationale": style_rationale,
+        "energy_rationale": energy_rationale,
         "language": language,
         "target_duration_seconds": float(target_duration),
         "clip_count": clip_count,
@@ -655,6 +1238,10 @@ def plan_fingerprint(plan: dict, record: dict) -> str:
         "clip_duration": plan.get("clip_duration_seconds"),
         "clip_count": plan.get("clip_count"),
         "style": plan.get("style"),
+        # Style and energy are independent creative inputs; clips generated
+        # for one pair must never be reused for another.
+        "ad_style": plan.get("ad_style") or plan.get("style"),
+        "ad_energy": plan.get("ad_energy"),
         "language": plan.get("language"),
         "clips": plan.get("clips"),
         "claims_used": plan.get("claims_used"),
@@ -664,8 +1251,28 @@ def plan_fingerprint(plan: dict, record: dict) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _prompt_style_energy(plan: dict) -> tuple[str, str]:
+    style = plan.get("ad_style") or plan.get("style") or DEFAULT_AD_STYLE
+    if style not in STYLE_PROFILES:
+        style = DEFAULT_AD_STYLE
+    energy = plan.get("ad_energy") or DEFAULT_AD_ENERGY
+    if energy not in ENERGY_PROFILES:
+        energy = DEFAULT_AD_ENERGY
+    return style, energy
+
+
 def _build_clip_prompt(plan: dict, clip: dict, record: dict,
                        refs: list[dict], total: int) -> str:
+    style, energy = _prompt_style_energy(plan)
+    profile = STYLE_PROFILES[style]
+    energy_profile = ENERGY_PROFILES[energy]
+    shot_type = clip.get("shot_type")
+    if shot_type not in ALLOWED_SHOT_TYPES:
+        shot_type = ROLE_DEFAULT_SHOT.get(clip.get("role"), "hybrid")
+    shot_visual = profile["shots"][shot_type]
+    balance = profile["balance"][shot_type]
+    camera = (clean_text(clip.get("camera"), max_len=300)
+              or "steady vertical framing that keeps the product in frame")
     ref_tags = ", ".join(f"<Picture {i}>" for i in range(1, len(refs) + 1))
     guide_tag = f"<Picture {len(refs) + 1}>"
     if clip["id"] == 1:
@@ -677,34 +1284,44 @@ def _build_clip_prompt(plan: dict, clip: dict, record: dict,
         guide = (
             f"Use {guide_tag} as the actual last frame of clip {clip['id'] - 1}. "
             "Start exactly from that frame and preserve the established "
-            "camera, hand position, product position, lighting and background.")
+            "camera, subject position, product position, lighting and "
+            "background.")
     product_line = (
         f"Use {ref_tags} as the only product identity references. Preserve the "
         "exact product shape, color, proportions, material, opening, handle "
         "and details. Do not redesign, recolor, replace, duplicate or "
         "substitute a similar product.")
+    header_style = style.replace("_", " ").upper()
     text = (
-        f"[SHOT {clip['id']} OF {total} | VERTICAL 9:16 UGC PRODUCT SHOWCASE]\n\n"
+        f"[SHOT {clip['id']} OF {total} | VERTICAL 9:16 | {header_style} | "
+        f"ENERGY: {energy.upper()}]\n\n"
         "PRODUCT IDENTITY:\n"
         f"The product is {record.get('title', '')}.\n"
         f"Brand: {record.get('brand') or 'not stated'}.\n"
         f"{product_line}\n\n"
         "STARTING FRAME / CONTINUITY:\n"
         f"{guide}\n\n"
-        "ACTION AND CAMERA:\n"
+        "SHOT DIRECTION:\n"
+        f"Shot type: {shot_type}. {balance}\n"
+        f"Camera: {camera}\n\n"
+        "ACTION:\n"
         f"{clip['video_prompt']}\n\n"
+        f"STYLE ({style}):\n"
+        f"{profile['visual']} {shot_visual}\n\n"
+        f"ENERGY ({energy}):\n"
+        f"{energy_profile['prompt']}\n\n"
+        "AUDIO / VOICE-OVER:\n"
+        f"{profile['dialogue']} Delivery: {energy_profile['delivery']}. "
+        "The line is spoken separately in English; no lip-sync and no "
+        "dialogue inside the video.\n\n"
         "CONTINUITY NOTES:\n"
         f"{clip['continuity']}\n\n"
-        "VISUAL STYLE:\n"
-        "Photorealistic vertical UGC product showcase, handheld phone-camera "
-        "feel, natural indoor daylight, realistic hands, clean composition, "
-        "the product always clearly visible and recognizable.\n\n"
         "RESTRICTIONS:\n"
         "No cuts, scene changes, new locations or new subjects. Keep the "
-        "same hand, product, background and lighting throughout. "
+        "same subject, product, background and lighting throughout. "
+        f"{profile['restriction']} "
         "No on-screen text, captions, subtitles, logos, watermarks, price "
         "tags, review screenshots or fake interfaces. No additional products. "
-        "No dialogue or lip-sync; the spoken voiceover is muxed separately. "
         "Do not claim medical, veterinary, safety or performance guarantees."
     )
     return text.strip()[:6000] + "\n"

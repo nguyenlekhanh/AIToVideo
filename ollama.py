@@ -60,13 +60,16 @@ def chat_json(system: str, user: str, *, model: str,
               timeout: int = 600, temperature: float = 0.2,
               num_predict: int = 4096,
               images: list[str] | None = None,
-              think: bool | None = False) -> dict:
+              think: bool | None = False,
+              schema: dict | None = None) -> dict:
     """One Ollama chat call that must return a JSON object.
 
     This is a small public wrapper around the same /api/chat transport
     used by the storyboard code. It never parses prose: malformed or
     truncated output raises so callers can retry or stop. `images` is a
-    list of base64 strings for vision models.
+    list of base64 strings for vision models. When `schema` is supplied it
+    is sent as Ollama's structured-output grammar so required keys and
+    enums cannot be omitted.
     """
     messages = [
         {"role": "system", "content": system},
@@ -78,7 +81,7 @@ def chat_json(system: str, user: str, *, model: str,
         "model": model,
         "messages": messages,
         "stream": False,
-        "format": "json",
+        "format": schema if schema is not None else "json",
         "options": {"temperature": temperature, "num_predict": num_predict},
     }
     if think is not None:
